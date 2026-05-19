@@ -48,7 +48,13 @@ app.get('/api/sessions', async (_req, res) => {
 });
 
 const httpServer = createServer(app);
-const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+// perMessageDeflate adds latency and CPU for tiny per-keystroke frames.
+// PTY traffic is small and not very compressible — keep it off.
+const wss = new WebSocketServer({
+  server: httpServer,
+  path: '/ws',
+  perMessageDeflate: false,
+});
 
 interface SessionState {
   id: string;
@@ -146,7 +152,12 @@ async function startSession(ws: WebSocket): Promise<SessionState> {
   return { id, artifactsDir, ptyProc, watcher };
 }
 
-wss.on('connection', async (ws) => {
+wss.on('connection', async (ws, req) => {
+  // Disable Nagle so each keystroke ships immediately instead of waiting
+  // for either the ACK or the 40ms timer.
+  const sock = req.socket as { setNoDelay?: (b: boolean) => void } | undefined;
+  sock?.setNoDelay?.(true);
+
   let state: SessionState;
   try {
     state = await startSession(ws);

@@ -27,7 +27,15 @@ export function useSession(active: boolean): SessionApi {
   useEffect(() => {
     if (!active) return; // lazy-connect: only the active tab opens its WS on mount
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${window.location.host}/ws`);
+    // In dev we connect to the backend port directly to avoid going
+    // through Vite's WebSocket proxy, which adds noticeable per-keystroke
+    // latency. In prod the backend serves the static bundle itself, so
+    // same-origin is fine.
+    const backendPort = import.meta.env.VITE_BACKEND_PORT ?? '7681';
+    const wsHost = import.meta.env.DEV
+      ? `${window.location.hostname}:${backendPort}`
+      : window.location.host;
+    const ws = new WebSocket(`${proto}://${wsHost}/ws`);
     wsRef.current = ws;
 
     ws.onopen = () => setConnected(true);
