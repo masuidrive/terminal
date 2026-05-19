@@ -46,7 +46,10 @@ export function App() {
 
   // Narrow viewports (Fold cover screen, phones, half-screen browsers) get
   // a single-pane layout with a Terminal/Artifacts toggle in the tab bar.
-  const isNarrow = useMediaQuery('(max-width: 768px)');
+  // Below this width Split is hidden and we force a single pane. 1024 was
+  // chosen empirically: at 884 (Fold inner display) Split leaves the
+  // artifact preview ~130 px wide, which is unusable.
+  const isNarrow = useMediaQuery('(max-width: 1023px)');
   const [view, setView] = useState<ViewMode>(() => {
     const saved = (localStorage.getItem(VIEW_KEY) as ViewMode | null) ?? 'split';
     return saved === 'split' || saved === 'term' || saved === 'artifacts' ? saved : 'split';

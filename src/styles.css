@@ -192,6 +192,11 @@ button:hover { background: var(--bg-elev-2); }
   grid-template-rows: auto 1fr;
   height: 100%;
   background: var(--bg-elev);
+  /* container query so the inner list/preview layout responds to the
+     pane's own width, not just the viewport — works for narrow phones
+     AND for the user dragging the Split resizer in. */
+  container-type: inline-size;
+  container-name: artifacts;
 }
 .artifacts-header {
   padding: 8px 12px;
@@ -427,9 +432,14 @@ button:hover { background: var(--bg-elev-2); }
     font-size: 12px;
   }
   .view-btn { padding: 6px 10px; font-size: 12px; }
+}
+
+/* Container query: stack the artifact list and preview vertically when
+   the artifacts pane itself is narrower than 480 px. This kicks in
+   whether the user has resized the Split divider or is on a phone in
+   single-pane Files mode. */
+@container artifacts (max-width: 480px) {
   .artifacts-body {
-    /* On phones the artifact list takes too much horizontal space; stack
-       it on top of the renderer instead. */
     grid-template-columns: 1fr;
     grid-template-rows: minmax(80px, 30%) 1fr;
   }
