@@ -11,6 +11,11 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5172,
     strictPort: true,
+    // We listen on 0.0.0.0 so this is reachable from other devices on the
+    // LAN by hostname (e.g. http://mbp14-2024:5172). Vite blocks unknown
+    // Host headers by default to prevent DNS rebinding; for a personal
+    // dev box accessed only from trusted LAN, allow everything.
+    allowedHosts: true,
     proxy: {
       '/ws': {
         target: `ws://localhost:${BACKEND_PORT}`,
