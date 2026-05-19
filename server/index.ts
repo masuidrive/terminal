@@ -23,12 +23,6 @@ import * as pty from 'node-pty';
 import type { ServerMessage, ClientMessage, ArtifactFile } from '../shared/protocol.ts';
 import { buildSystemPrompt } from './system-prompt.ts';
 
-// Pre-approved Bash patterns for the spawned claude. Each pattern is what
-// claude code's permission system matches against a tool invocation; "Bash"
-// alone would gate every shell command, while "Bash(tmux *)" approves only
-// commands whose argv starts with `tmux`. Keep this list narrow.
-const ALLOWED_TOOLS = ['Bash(tmux *)'].join(',');
-
 const PORT = Number(process.env.SERVER_PORT ?? 7681);
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
@@ -162,15 +156,13 @@ async function createSession(): Promise<SessionState> {
   const cols = 120;
   const rows = 32;
   const claudeArgs = [
-    '--append-system-prompt', buildSystemPrompt({ yolo: YOLO }),
+    '--append-system-prompt', buildSystemPrompt(),
     '--add-dir', artifactsDir,
   ];
   if (YOLO) {
     // YOLO mode: claude was started with --yolo (or YOLO=1). Skip every
-    // permission prompt instead of pre-approving specific patterns.
+    // permission prompt.
     claudeArgs.push('--dangerously-skip-permissions');
-  } else {
-    claudeArgs.push('--allowedTools', ALLOWED_TOOLS);
   }
   const ptyProc = pty.spawn(
     CLAUDE_BIN,
@@ -381,5 +373,5 @@ httpServer.listen(PORT, () => {
   console.log(`[ticket.web] sessions: ${SESSIONS_ROOT}`);
   console.log(`[ticket.web] project:  ${PROJECT_DIR}`);
   console.log(`[ticket.web] claude:   ${CLAUDE_BIN}`);
-  console.log(`[ticket.web] mode:     ${YOLO ? '🐉 YOLO (--dangerously-skip-permissions)' : 'normal (tmux pre-approved)'}`);
+  console.log(`[ticket.web] mode:     ${YOLO ? '🐉 YOLO (--dangerously-skip-permissions)' : 'normal'}`);
 });
