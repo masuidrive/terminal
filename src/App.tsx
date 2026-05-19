@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Tabs } from './components/Tabs.tsx';
 import { TerminalView } from './components/Terminal.tsx';
@@ -6,17 +6,59 @@ import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
 import { useSession } from './hooks/useSession.ts';
 import type { TabState } from './types.ts';
 
+const TABS_KEY = 'ticket-web:tabs';
+const ACTIVE_KEY = 'ticket-web:activeTabId';
+
 function newTab(idx: number): TabState {
   return { id: crypto.randomUUID(), title: `claude ${idx}` };
 }
 
-export function App() {
-  const [tabs, setTabs] = useState<TabState[]>(() => [newTab(1)]);
-  const [activeId, setActiveId] = useState<string>(() => tabs[0]!.id);
-  const [counter, setCounter] = useState(2);
+function loadTabs(): { tabs: TabState[]; activeId: string } {
+  try {
+    const raw = localStorage.getItem(TABS_KEY);
+    if (raw) {
+      const tabs = JSON.parse(raw) as TabState[];
+      if (Array.isArray(tabs) && tabs.length > 0) {
+        const savedActive = localStorage.getItem(ACTIVE_KEY);
+        const activeId =
+          savedActive && tabs.some((t) => t.id === savedActive)
+            ? savedActive
+            : tabs[0]!.id;
+        return { tabs, activeId };
+      }
+    }
+  } catch {
+    /* fallthrough to default */
+  }
+  const t = newTab(1);
+  return { tabs: [t], activeId: t.id };
+}
 
-  // Keep tabs mounted once opened so xterm + WS state survives tab switching.
-  const [mounted, setMounted] = useState<Set<string>>(() => new Set([tabs[0]!.id]));
+export function App() {
+  const initial = loadTabs();
+  const [tabs, setTabs] = useState<TabState[]>(initial.tabs);
+  const [activeId, setActiveId] = useState<string>(initial.activeId);
+  const [counter, setCounter] = useState(initial.tabs.length + 1);
+
+  // Persist on every change.
+  useEffect(() => {
+    try {
+      localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
+    } catch {
+      /* ignore */
+    }
+  }, [tabs]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_KEY, activeId);
+    } catch {
+      /* ignore */
+    }
+  }, [activeId]);
+
+  // Lazy-mount tabs so opening doesn't spin up every PTY at once. Once
+  // mounted, keep them mounted (xterm/WS state survives switching).
+  const [mounted, setMounted] = useState<Set<string>>(() => new Set([initial.activeId]));
   function ensureMounted(id: string) {
     setMounted((prev) => {
       if (prev.has(id)) return prev;
@@ -40,12 +82,19 @@ export function App() {
   }
 
   function handleClose(id: string) {
+    // Clear the persisted session id so a future tab with the same uuid
+    // (very unlikely) doesn't reattach by accident. The actual server-side
+    // PTY will idle out and be GC'd.
+    try {
+      localStorage.removeItem('ticket-web:tab:' + id);
+    } catch {
+      /* ignore */
+    }
     setTabs((prev) => {
       const idx = prev.findIndex((t) => t.id === id);
       if (idx === -1) return prev;
       const next = prev.filter((t) => t.id !== id);
       if (next.length === 0) {
-        // always keep at least one tab
         const fresh = newTab(counter);
         setCounter((c) => c + 1);
         setActiveId(fresh.id);
@@ -86,11 +135,8 @@ export function App() {
   );
 }
 
-// One TabPanel mounts a single useSession() + the split layout.
-// We render every mounted tab into the same area, only the active one is
-// visible (display:none for the rest) so its xterm/WS keeps running.
 function TabPanel({ tabId, active }: { tabId: string; active: boolean }) {
-  const session = useSession(true);
+  const session = useSession(tabId, true);
   return (
     <div
       style={{

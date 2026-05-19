@@ -1,8 +1,16 @@
 // Backend: Express HTTP + WebSocket + PTY + chokidar artifacts watcher.
-// One WS connection ↔ one terminal session ↔ one artifacts directory.
+//
+// Sessions are keyed by id and live INDEPENDENT of any single WebSocket
+// connection. Closing the WebSocket does not kill the PTY — the session
+// keeps running, accumulating output in a recent-output ring buffer, until
+// either (a) a new WS reattaches with ?session=<id> and replays the buffer,
+// or (b) the idle GC sweep reaps it.
+//
+// Heartbeat: server pings every 30s; if no pong before next tick, the
+// socket is terminated. The next client connect reattaches.
 
 import { createServer } from 'node:http';
-import { mkdir, stat, readdir } from 'node:fs/promises';
+import { mkdir, stat, readdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,10 +27,12 @@ const PORT = Number(process.env.SERVER_PORT ?? 7681);
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
 const SESSIONS_ROOT = path.join(os.tmpdir(), 'ticket-web', 'sessions');
+const RECENT_BUFFER_BYTES = 256 * 1024;
+const SESSION_IDLE_MS = 60 * 60 * 1000; // 1h
+const HEARTBEAT_MS = 30 * 1000;
 
 const app = express();
 
-// Serve artifact file contents. Path-traversal-safe.
 app.get('/artifacts/:sid/*splat', async (req, res) => {
   const sid = req.params.sid;
   const splat = (req.params as Record<string, string | string[]>).splat;
@@ -40,16 +50,18 @@ app.get('/artifacts/:sid/*splat', async (req, res) => {
   res.sendFile(resolved);
 });
 
-// Health / debug.
-app.get('/api/sessions', async (_req, res) => {
-  await mkdir(SESSIONS_ROOT, { recursive: true });
-  const entries = await readdir(SESSIONS_ROOT);
-  res.json({ sessions: entries });
+app.get('/api/sessions', (_req, res) => {
+  res.json({
+    sessions: [...sessions.keys()],
+    live: [...sessions.values()].map((s) => ({
+      id: s.id,
+      attached: !!s.ws,
+      idleMs: Date.now() - s.lastActivity,
+    })),
+  });
 });
 
 const httpServer = createServer(app);
-// perMessageDeflate adds latency and CPU for tiny per-keystroke frames.
-// PTY traffic is small and not very compressible — keep it off.
 const wss = new WebSocketServer({
   server: httpServer,
   path: '/ws',
@@ -61,12 +73,31 @@ interface SessionState {
   artifactsDir: string;
   ptyProc: pty.IPty;
   watcher: FSWatcher;
+  ws: WebSocket | null;
+  /** Recent PTY output, capped to RECENT_BUFFER_BYTES, used to repaint
+   *  xterm scrollback when a client reattaches. */
+  recent: string;
+  lastActivity: number;
+  /** Last size requested by a client. Used to spawn replacement PTYs at
+   *  the correct dimensions (currently unused — we spawn once and resize
+   *  on first client message). */
+  cols: number;
+  rows: number;
 }
 
-const sessions = new Map<WebSocket, SessionState>();
+const sessions = new Map<string, SessionState>();
 
-function send(ws: WebSocket, msg: ServerMessage) {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+function send(target: SessionState | WebSocket, msg: ServerMessage) {
+  const ws = target instanceof WebSocket ? target : target.ws;
+  if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+}
+
+function appendRecent(state: SessionState, data: string) {
+  const combined = state.recent + data;
+  state.recent = combined.length > RECENT_BUFFER_BYTES
+    ? combined.slice(combined.length - RECENT_BUFFER_BYTES)
+    : combined;
+  state.lastActivity = Date.now();
 }
 
 async function listArtifacts(dir: string): Promise<ArtifactFile[]> {
@@ -92,19 +123,21 @@ async function listArtifacts(dir: string): Promise<ArtifactFile[]> {
   return out;
 }
 
-async function startSession(ws: WebSocket): Promise<SessionState> {
+async function createSession(): Promise<SessionState> {
   const id = randomUUID();
   const sessionDir = path.join(SESSIONS_ROOT, id);
   const artifactsDir = path.join(sessionDir, 'artifacts');
   await mkdir(artifactsDir, { recursive: true });
 
+  const cols = 120;
+  const rows = 32;
   const ptyProc = pty.spawn(
     CLAUDE_BIN,
     ['--append-system-prompt', ARTIFACTS_SYSTEM_PROMPT, '--add-dir', artifactsDir],
     {
       name: 'xterm-256color',
-      cols: 120,
-      rows: 32,
+      cols,
+      rows,
       cwd: PROJECT_DIR,
       env: {
         ...process.env,
@@ -115,17 +148,33 @@ async function startSession(ws: WebSocket): Promise<SessionState> {
     }
   );
 
-  ptyProc.onData((data) => send(ws, { ch: 'pty', data }));
-  ptyProc.onExit(({ exitCode, signal }) =>
-    send(ws, { ch: 'pty-exit', code: exitCode, signal: signal ?? null })
-  );
+  const state: SessionState = {
+    id,
+    artifactsDir,
+    ptyProc,
+    watcher: null as unknown as FSWatcher, // assigned below
+    ws: null,
+    recent: '',
+    lastActivity: Date.now(),
+    cols,
+    rows,
+  };
 
-  // Watch the artifacts directory. awaitWriteFinish prevents firing on
-  // partially-written files when Claude is streaming a large artifact.
+  ptyProc.onData((data) => {
+    appendRecent(state, data);
+    send(state, { ch: 'pty', data });
+  });
+  ptyProc.onExit(({ exitCode, signal }) => {
+    send(state, { ch: 'pty-exit', code: exitCode, signal: signal ?? null });
+    state.watcher?.close().catch(() => undefined);
+    sessions.delete(state.id);
+  });
+
   const watcher = chokidar.watch(artifactsDir, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
   });
+  state.watcher = watcher;
 
   async function emitFile(event: 'add' | 'change', full: string) {
     try {
@@ -137,39 +186,87 @@ async function startSession(ws: WebSocket): Promise<SessionState> {
         mtime: st.mtimeMs,
         ext: path.extname(full).slice(1).toLowerCase(),
       };
-      send(ws, { ch: 'artifacts', event, file });
+      send(state, { ch: 'artifacts', event, file });
     } catch {
-      // raced with delete; ignore
+      // raced with delete
     }
   }
-
   watcher.on('add', (p) => emitFile('add', p));
   watcher.on('change', (p) => emitFile('change', p));
   watcher.on('unlink', (p) =>
-    send(ws, { ch: 'artifacts', event: 'unlink', path: path.relative(artifactsDir, p) })
+    send(state, { ch: 'artifacts', event: 'unlink', path: path.relative(artifactsDir, p) })
   );
 
-  return { id, artifactsDir, ptyProc, watcher };
+  return state;
+}
+
+async function attachWs(state: SessionState, ws: WebSocket) {
+  // Boot off any prior client (only one viewer per session at a time).
+  if (state.ws && state.ws !== ws && state.ws.readyState === state.ws.OPEN) {
+    try {
+      state.ws.close(4000, 'replaced by newer connection');
+    } catch {
+      /* ignore */
+    }
+  }
+  state.ws = ws;
+  state.lastActivity = Date.now();
+
+  send(state, { ch: 'hello', sessionId: state.id, artifactsDir: state.artifactsDir });
+  if (state.recent) {
+    // Replay the recent buffer so the client's xterm picks up the current
+    // PTY screen state without needing a redraw from claude.
+    send(state, { ch: 'pty', data: state.recent });
+  }
+  send(state, { ch: 'artifacts-list', files: await listArtifacts(state.artifactsDir) });
 }
 
 wss.on('connection', async (ws, req) => {
-  // Disable Nagle so each keystroke ships immediately instead of waiting
-  // for either the ACK or the 40ms timer.
+  // Disable Nagle so each keystroke ships immediately.
   const sock = req.socket as { setNoDelay?: (b: boolean) => void } | undefined;
   sock?.setNoDelay?.(true);
 
-  let state: SessionState;
-  try {
-    state = await startSession(ws);
-  } catch (err) {
-    send(ws, { ch: 'error', message: `failed to start session: ${(err as Error).message}` });
-    ws.close();
-    return;
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const requestedId = url.searchParams.get('session');
+
+  let state: SessionState | undefined =
+    requestedId ? sessions.get(requestedId) : undefined;
+  if (!state) {
+    try {
+      state = await createSession();
+      sessions.set(state.id, state);
+    } catch (err) {
+      ws.send(
+        JSON.stringify({ ch: 'error', message: `failed to start session: ${(err as Error).message}` })
+      );
+      ws.close();
+      return;
+    }
   }
-  sessions.set(ws, state);
-  send(ws, { ch: 'hello', sessionId: state.id, artifactsDir: state.artifactsDir });
-  // Send initial (empty-ish) artifact listing so the client can render.
-  send(ws, { ch: 'artifacts-list', files: await listArtifacts(state.artifactsDir) });
+  await attachWs(state, ws);
+
+  // Heartbeat. ws library exposes ping/pong frames; the browser handles
+  // pong replies automatically.
+  let alive = true;
+  ws.on('pong', () => {
+    alive = true;
+  });
+  const hb = setInterval(() => {
+    if (!alive) {
+      try {
+        ws.terminate();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    alive = false;
+    try {
+      ws.ping();
+    } catch {
+      /* ignore */
+    }
+  }, HEARTBEAT_MS);
 
   ws.on('message', async (raw) => {
     let msg: ClientMessage;
@@ -178,57 +275,69 @@ wss.on('connection', async (ws, req) => {
     } catch {
       return;
     }
-    const s = sessions.get(ws);
-    if (!s) return;
+    if (!state) return;
+    state.lastActivity = Date.now();
     if (msg.ch === 'pty' && msg.op === 'input') {
-      s.ptyProc.write(msg.data);
+      state.ptyProc.write(msg.data);
     } else if (msg.ch === 'pty' && msg.op === 'resize') {
+      const cols = Math.max(1, msg.cols);
+      const rows = Math.max(1, msg.rows);
+      state.cols = cols;
+      state.rows = rows;
       try {
-        s.ptyProc.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
+        state.ptyProc.resize(cols, rows);
       } catch {
         /* pty may have exited */
       }
     } else if (msg.ch === 'artifacts' && msg.op === 'list') {
-      send(ws, { ch: 'artifacts-list', files: await listArtifacts(s.artifactsDir) });
+      send(state, { ch: 'artifacts-list', files: await listArtifacts(state.artifactsDir) });
     }
   });
 
-  ws.on('close', async () => {
-    const s = sessions.get(ws);
-    if (!s) return;
-    sessions.delete(ws);
-    try {
-      s.ptyProc.kill();
-    } catch {
-      /* already dead */
+  ws.on('close', () => {
+    clearInterval(hb);
+    // Detach only — keep PTY and watcher alive for reattach.
+    if (state && state.ws === ws) {
+      state.ws = null;
     }
-    await s.watcher.close();
-    // Keep the artifacts dir on disk so the user can recover; a separate
-    // GC sweep handles cleanup.
   });
 });
 
-// Periodic GC: drop session dirs older than 24h with no live WS.
-async function gc() {
+// GC: kill detached sessions idle > SESSION_IDLE_MS, and delete on-disk
+// session dirs that are not in our live map.
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, state] of sessions) {
+    if (state.ws) continue;
+    if (now - state.lastActivity > SESSION_IDLE_MS) {
+      try {
+        state.ptyProc.kill();
+      } catch {
+        /* ignore */
+      }
+      state.watcher.close().catch(() => undefined);
+      sessions.delete(id);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
+setInterval(async () => {
   try {
     const entries = await readdir(SESSIONS_ROOT).catch(() => [] as string[]);
-    const liveIds = new Set([...sessions.values()].map((s) => s.id));
+    const live = new Set(sessions.keys());
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const id of entries) {
-      if (liveIds.has(id)) continue;
+      if (live.has(id)) continue;
       const dir = path.join(SESSIONS_ROOT, id);
       const st = await stat(dir).catch(() => null);
       if (st && st.mtimeMs < cutoff) {
-        await import('node:fs/promises').then((fs) =>
-          fs.rm(dir, { recursive: true, force: true })
-        );
+        await rm(dir, { recursive: true, force: true });
       }
     }
   } catch {
     /* best effort */
   }
-}
-setInterval(gc, 60 * 60 * 1000).unref();
+}, 60 * 60 * 1000).unref();
 
 httpServer.listen(PORT, () => {
   console.log(`[ticket.web] http://localhost:${PORT}`);
