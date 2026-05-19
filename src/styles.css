@@ -161,6 +161,21 @@ button:hover { background: var(--bg-elev-2); }
 }
 .resizer:hover { background: var(--accent-2); }
 
+.status-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: var(--accent);
+  color: #1a1a2e;
+  font: 600 12px/1.4 system-ui, sans-serif;
+  text-align: center;
+  padding: 6px 12px;
+  pointer-events: none;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
 .resizer-hidden {
   /* Width-collapse the drag handle when we're not in Split mode; the
      children remain mounted so xterm and the artifacts list keep their

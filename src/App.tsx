@@ -172,6 +172,9 @@ function TabPanel({
   view: ViewMode;
 }) {
   const session = useSession(tabId, true);
+  // Surface WS state so debugging "blank screen" cases doesn't need
+  // DevTools — a banner appears when we're disconnected.
+  const showStatus = !session.connected;
   const termPanelRef = useRef<ImperativePanelHandle>(null);
   const artPanelRef = useRef<ImperativePanelHandle>(null);
 
@@ -200,6 +203,13 @@ function TabPanel({
       }}
       data-tab-id={tabId}
     >
+      {showStatus && (
+        <div className="status-banner">
+          {session.sessionId
+            ? `Reconnecting to session ${session.sessionId.slice(0, 8)}…`
+            : 'Connecting to server…'}
+        </div>
+      )}
       <PanelGroup
         direction="horizontal"
         autoSaveId={`ticket-web:${tabId}`}
