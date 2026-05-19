@@ -59,11 +59,16 @@ export function TerminalView({ session, visible }: Props) {
     const resizeDisp = term.onResize(({ cols, rows }) =>
       session.sendResize(cols, rows)
     );
-    // Send initial size after layout.
+    // Send initial size after layout. Skip when the host has no real
+    // dimensions yet (mounted off-screen for the inactive view-mode pane);
+    // a later visible-effect run will fit-and-send when it actually
+    // appears.
     queueMicrotask(() => {
       try {
         fit.fit();
-        session.sendResize(term.cols, term.rows);
+        if (term.cols > 5 && term.rows > 2) {
+          session.sendResize(term.cols, term.rows);
+        }
       } catch { /* ignore */ }
     });
 

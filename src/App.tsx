@@ -4,10 +4,14 @@ import { Tabs } from './components/Tabs.tsx';
 import { TerminalView } from './components/Terminal.tsx';
 import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
 import { useSession } from './hooks/useSession.ts';
+import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import type { TabState } from './types.ts';
 
 const TABS_KEY = 'ticket-web:tabs';
 const ACTIVE_KEY = 'ticket-web:activeTabId';
+const VIEW_KEY = 'ticket-web:view';
+
+type ViewMode = 'split' | 'term' | 'artifacts';
 
 function newTab(idx: number): TabState {
   return { id: crypto.randomUUID(), title: `claude ${idx}` };
@@ -28,7 +32,7 @@ function loadTabs(): { tabs: TabState[]; activeId: string } {
       }
     }
   } catch {
-    /* fallthrough to default */
+    /* fallthrough */
   }
   const t = newTab(1);
   return { tabs: [t], activeId: t.id };
@@ -40,24 +44,28 @@ export function App() {
   const [activeId, setActiveId] = useState<string>(initial.activeId);
   const [counter, setCounter] = useState(initial.tabs.length + 1);
 
-  // Persist on every change.
+  // Narrow viewports (Fold cover screen, phones, half-screen browsers) get
+  // a single-pane layout with a Terminal/Artifacts toggle in the tab bar.
+  const isNarrow = useMediaQuery('(max-width: 768px)');
+  const [view, setView] = useState<ViewMode>(() => {
+    const saved = (localStorage.getItem(VIEW_KEY) as ViewMode | null) ?? 'split';
+    return saved === 'split' || saved === 'term' || saved === 'artifacts' ? saved : 'split';
+  });
   useEffect(() => {
-    try {
-      localStorage.setItem(TABS_KEY, JSON.stringify(tabs));
-    } catch {
-      /* ignore */
-    }
+    try { localStorage.setItem(VIEW_KEY, view); } catch { /* ignore */ }
+  }, [view]);
+  // When the viewport flips to narrow, collapse split mode to terminal.
+  useEffect(() => {
+    if (isNarrow && view === 'split') setView('term');
+  }, [isNarrow, view]);
+
+  useEffect(() => {
+    try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)); } catch { /* ignore */ }
   }, [tabs]);
   useEffect(() => {
-    try {
-      localStorage.setItem(ACTIVE_KEY, activeId);
-    } catch {
-      /* ignore */
-    }
+    try { localStorage.setItem(ACTIVE_KEY, activeId); } catch { /* ignore */ }
   }, [activeId]);
 
-  // Lazy-mount tabs so opening doesn't spin up every PTY at once. Once
-  // mounted, keep them mounted (xterm/WS state survives switching).
   const [mounted, setMounted] = useState<Set<string>>(() => new Set([initial.activeId]));
   function ensureMounted(id: string) {
     setMounted((prev) => {
@@ -82,10 +90,6 @@ export function App() {
   }
 
   function handleClose(id: string) {
-    // Explicitly destroy the server-side session — there is no idle GC
-    // anymore, so without this the PTY would leak until server shutdown.
-    // `keepalive: true` lets the request finish even if React unmounts
-    // the tab (and thus closes the WS) immediately after.
     let storedSession: string | null = null;
     try {
       storedSession = localStorage.getItem('ticket-web:tab:' + id);
@@ -94,8 +98,6 @@ export function App() {
       /* ignore */
     }
     if (storedSession) {
-      // /api/* is proxied to the backend by Vite in dev and served by the
-      // backend directly in prod, so a relative URL works in both modes.
       fetch(`/api/sessions/${encodeURIComponent(storedSession)}`, {
         method: 'DELETE',
         keepalive: true,
@@ -134,19 +136,35 @@ export function App() {
         onSelect={handleSelect}
         onClose={handleClose}
         onNew={handleNew}
+        view={view}
+        onViewChange={setView}
+        showSplit={!isNarrow}
       />
       <div className="panels" style={{ position: 'relative' }}>
         {tabs
           .filter((t) => mounted.has(t.id))
           .map((t) => (
-            <TabPanel key={t.id} tabId={t.id} active={t.id === activeId} />
+            <TabPanel
+              key={t.id}
+              tabId={t.id}
+              active={t.id === activeId}
+              view={view}
+            />
           ))}
       </div>
     </div>
   );
 }
 
-function TabPanel({ tabId, active }: { tabId: string; active: boolean }) {
+function TabPanel({
+  tabId,
+  active,
+  view,
+}: {
+  tabId: string;
+  active: boolean;
+  view: ViewMode;
+}) {
   const session = useSession(tabId, true);
   return (
     <div
@@ -157,19 +175,46 @@ function TabPanel({ tabId, active }: { tabId: string; active: boolean }) {
       }}
       data-tab-id={tabId}
     >
-      <PanelGroup direction="horizontal" autoSaveId={`ticket-web:${tabId}`}>
-        <Panel defaultSize={60} minSize={25}>
+      {view === 'split' ? (
+        <PanelGroup direction="horizontal" autoSaveId={`ticket-web:${tabId}`}>
+          <Panel defaultSize={60} minSize={25}>
+            <TerminalView session={session} visible={active} />
+          </Panel>
+          <PanelResizeHandle className="resizer" />
+          <Panel defaultSize={40} minSize={20}>
+            <ArtifactsPanel
+              sessionId={session.sessionId}
+              artifactsDir={session.artifactsDir}
+              artifacts={session.artifacts}
+            />
+          </Panel>
+        </PanelGroup>
+      ) : view === 'term' ? (
+        // Single-pane terminal; we still mount Artifacts off-screen so its
+        // WS-driven state (the artifacts list) stays current when the user
+        // flips back to it.
+        <div className="single-pane">
           <TerminalView session={session} visible={active} />
-        </Panel>
-        <PanelResizeHandle className="resizer" />
-        <Panel defaultSize={40} minSize={20}>
+          <div className="off-screen">
+            <ArtifactsPanel
+              sessionId={session.sessionId}
+              artifactsDir={session.artifactsDir}
+              artifacts={session.artifacts}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="single-pane">
           <ArtifactsPanel
             sessionId={session.sessionId}
             artifactsDir={session.artifactsDir}
             artifacts={session.artifacts}
           />
-        </Panel>
-      </PanelGroup>
+          <div className="off-screen">
+            <TerminalView session={session} visible={false} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
