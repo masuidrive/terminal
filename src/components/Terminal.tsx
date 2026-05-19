@@ -114,24 +114,25 @@ export function TerminalView({ session, visible }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-fit when our visibility / host size changes. We don't replace
-  // xterm — just have it recompute cols/rows for the current host size
-  // and let onResize forward that to the PTY.
+  // Re-fit when our visibility / host size changes. We rely entirely on
+  // ResizeObserver and refuse to fit until the host has non-degenerate
+  // dimensions: during view-mode transitions the host briefly has width
+  // 0 (Panel hasn't been resized yet), and fitting at that moment would
+  // bake a 1- or 2-column value into xterm that survives the subsequent
+  // expand. Threshold of 20 px keeps us above the smallest plausible
+  // cell size with margin.
   useLayoutEffect(() => {
     if (!visible) return;
     const host = hostRef.current;
     if (!host) return;
     const ro = new ResizeObserver(() => {
+      const rect = host.getBoundingClientRect();
+      if (rect.width < 20 || rect.height < 20) return;
       try {
         fitRef.current?.fit();
       } catch { /* ignore */ }
     });
     ro.observe(host);
-    queueMicrotask(() => {
-      try {
-        fitRef.current?.fit();
-      } catch { /* ignore */ }
-    });
     return () => ro.disconnect();
   }, [visible]);
 
