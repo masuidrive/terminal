@@ -18,8 +18,35 @@ const VIEW_KEY = 'ticket-web:view';
 
 type ViewMode = 'split' | 'term' | 'artifacts';
 
+// `crypto.randomUUID()` requires a secure context (HTTPS or localhost),
+// which excludes the LAN-IP / hostname use case we care about. Fall back
+// to a hand-rolled v4 UUID using getRandomValues — that one IS available
+// in non-secure contexts on all modern browsers.
+function uuid(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c?.randomUUID) {
+    try { return c.randomUUID(); } catch { /* fall through */ }
+  }
+  const bytes = new Uint8Array(16);
+  (globalThis.crypto ?? { getRandomValues: (a: Uint8Array) => {
+    for (let i = 0; i < a.length; i++) a[i] = (Math.random() * 256) | 0;
+    return a;
+  } }).getRandomValues(bytes);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex: string[] = [];
+  for (let i = 0; i < 16; i++) hex.push(bytes[i]!.toString(16).padStart(2, '0'));
+  return (
+    hex.slice(0, 4).join('') + '-' +
+    hex.slice(4, 6).join('') + '-' +
+    hex.slice(6, 8).join('') + '-' +
+    hex.slice(8, 10).join('') + '-' +
+    hex.slice(10, 16).join('')
+  );
+}
+
 function newTab(idx: number): TabState {
-  return { id: crypto.randomUUID(), title: `claude ${idx}` };
+  return { id: uuid(), title: `claude ${idx}` };
 }
 
 function loadTabs(): { tabs: TabState[]; activeId: string } {

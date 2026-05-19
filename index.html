@@ -6,6 +6,15 @@
     <title>ticket.web</title>
   </head>
   <body>
+    <!-- Boot probe: if you see this text on screen, the HTML loaded but
+         main.tsx never executed (script error, network failure, etc.).
+         main.tsx removes #boot-probe as its first action so this is hidden
+         on normal boots. Tap '?reset=1' link below to clear localStorage. -->
+    <div id="boot-probe" style="position:fixed;top:8px;left:8px;right:8px;font:13px ui-monospace,monospace;color:#f5a623;background:#1a1a2e;padding:10px;border:1px solid #f5a623;border-radius:6px;z-index:99999;">
+      loading… if this stays for &gt;5s the JS bundle didn't load.<br>
+      <a href="?reset=1" style="color:#4f8cff">reset & reload</a> ·
+      <a href="?debug=1" style="color:#4f8cff">enable debug console</a>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
