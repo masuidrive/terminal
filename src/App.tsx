@@ -8,6 +8,7 @@ import {
 import { Tabs } from './components/Tabs.tsx';
 import { TerminalView } from './components/Terminal.tsx';
 import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
+import { KeyboardToolbar } from './components/KeyboardToolbar.tsx';
 import { useSession } from './hooks/useSession.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import type { TabState } from './types.ts';
@@ -178,6 +179,7 @@ export function App() {
               tabId={t.id}
               active={t.id === activeId}
               view={view}
+              isNarrow={isNarrow}
             />
           ))}
       </div>
@@ -193,10 +195,12 @@ function TabPanel({
   tabId,
   active,
   view,
+  isNarrow,
 }: {
   tabId: string;
   active: boolean;
   view: ViewMode;
+  isNarrow: boolean;
 }) {
   const session = useSession(tabId, true);
   // Surface WS state so debugging "blank screen" cases doesn't need
@@ -220,13 +224,18 @@ function TabPanel({
     }
   }, [view]);
 
+  // Soft-keyboard toolbar: only useful when the terminal pane is visible
+  // and the user is on a touch / narrow viewport.
+  const showToolbar = isNarrow && view !== 'artifacts';
+
   return (
     <div
       className={`tab-panel view-${view}`}
       style={{
         position: 'absolute',
         inset: 0,
-        display: active ? 'block' : 'none',
+        display: active ? 'flex' : 'none',
+        flexDirection: 'column',
       }}
       data-tab-id={tabId}
     >
@@ -237,37 +246,40 @@ function TabPanel({
             : 'Connecting to server…'}
         </div>
       )}
-      <PanelGroup
-        direction="horizontal"
-        autoSaveId={`ticket-web:${tabId}`}
-        // Without this, react-resizable-panels keeps complaining about
-        // server/client size mismatches when we drive sizes imperatively.
-        storage={memoryStorage}
-      >
-        <Panel
-          ref={termPanelRef}
-          defaultSize={60}
-          minSize={0}
-          collapsible
-          collapsedSize={0}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <PanelGroup
+          direction="horizontal"
+          autoSaveId={`ticket-web:${tabId}`}
+          // Without this, react-resizable-panels keeps complaining about
+          // server/client size mismatches when we drive sizes imperatively.
+          storage={memoryStorage}
         >
-          <TerminalView session={session} visible={active && view !== 'artifacts'} />
-        </Panel>
-        <PanelResizeHandle className={'resizer' + (view === 'split' ? '' : ' resizer-hidden')} />
-        <Panel
-          ref={artPanelRef}
-          defaultSize={40}
-          minSize={0}
-          collapsible
-          collapsedSize={0}
-        >
-          <ArtifactsPanel
-            sessionId={session.sessionId}
-            artifactsDir={session.artifactsDir}
-            artifacts={session.artifacts}
-          />
-        </Panel>
-      </PanelGroup>
+          <Panel
+            ref={termPanelRef}
+            defaultSize={60}
+            minSize={0}
+            collapsible
+            collapsedSize={0}
+          >
+            <TerminalView session={session} visible={active && view !== 'artifacts'} />
+          </Panel>
+          <PanelResizeHandle className={'resizer' + (view === 'split' ? '' : ' resizer-hidden')} />
+          <Panel
+            ref={artPanelRef}
+            defaultSize={40}
+            minSize={0}
+            collapsible
+            collapsedSize={0}
+          >
+            <ArtifactsPanel
+              sessionId={session.sessionId}
+              artifactsDir={session.artifactsDir}
+              artifacts={session.artifacts}
+            />
+          </Panel>
+        </PanelGroup>
+      </div>
+      {showToolbar && <KeyboardToolbar session={session} />}
     </div>
   );
 }
