@@ -1,5 +1,10 @@
-import { useEffect, useState } from 'react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from 'react-resizable-panels';
 import { Tabs } from './components/Tabs.tsx';
 import { TerminalView } from './components/Terminal.tsx';
 import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
@@ -44,11 +49,6 @@ export function App() {
   const [activeId, setActiveId] = useState<string>(initial.activeId);
   const [counter, setCounter] = useState(initial.tabs.length + 1);
 
-  // Narrow viewports (Fold cover screen, phones, half-screen browsers) get
-  // a single-pane layout with a Terminal/Artifacts toggle in the tab bar.
-  // Below this width Split is hidden and we force a single pane. 1024 was
-  // chosen empirically: at 884 (Fold inner display) Split leaves the
-  // artifact preview ~130 px wide, which is unusable.
   const isNarrow = useMediaQuery('(max-width: 1023px)');
   const [view, setView] = useState<ViewMode>(() => {
     const saved = (localStorage.getItem(VIEW_KEY) as ViewMode | null) ?? 'split';
@@ -57,7 +57,6 @@ export function App() {
   useEffect(() => {
     try { localStorage.setItem(VIEW_KEY, view); } catch { /* ignore */ }
   }, [view]);
-  // When the viewport flips to narrow, collapse split mode to terminal.
   useEffect(() => {
     if (isNarrow && view === 'split') setView('term');
   }, [isNarrow, view]);
@@ -159,6 +158,10 @@ export function App() {
   );
 }
 
+// One stable layout across all three view modes. We never re-parent the
+// Terminal or ArtifactsPanel — that would destroy the xterm instance and
+// lose the rendered buffer. Instead, view changes flip a CSS class that
+// controls grid column sizing and visibility of the resize handle.
 function TabPanel({
   tabId,
   active,
@@ -169,8 +172,27 @@ function TabPanel({
   view: ViewMode;
 }) {
   const session = useSession(tabId, true);
+  const termPanelRef = useRef<ImperativePanelHandle>(null);
+  const artPanelRef = useRef<ImperativePanelHandle>(null);
+
+  // Drive panel sizes from the current view. minSize=0 + collapsible lets
+  // a pane shrink to nothing without unmounting.
+  useEffect(() => {
+    const term = termPanelRef.current;
+    const art = artPanelRef.current;
+    if (!term || !art) return;
+    if (view === 'split') {
+      term.resize(60);
+    } else if (view === 'term') {
+      term.resize(100);
+    } else {
+      term.resize(0);
+    }
+  }, [view]);
+
   return (
     <div
+      className={`tab-panel view-${view}`}
       style={{
         position: 'absolute',
         inset: 0,
@@ -178,46 +200,49 @@ function TabPanel({
       }}
       data-tab-id={tabId}
     >
-      {view === 'split' ? (
-        <PanelGroup direction="horizontal" autoSaveId={`ticket-web:${tabId}`}>
-          <Panel defaultSize={60} minSize={25}>
-            <TerminalView session={session} visible={active} />
-          </Panel>
-          <PanelResizeHandle className="resizer" />
-          <Panel defaultSize={40} minSize={20}>
-            <ArtifactsPanel
-              sessionId={session.sessionId}
-              artifactsDir={session.artifactsDir}
-              artifacts={session.artifacts}
-            />
-          </Panel>
-        </PanelGroup>
-      ) : view === 'term' ? (
-        // Single-pane terminal; we still mount Artifacts off-screen so its
-        // WS-driven state (the artifacts list) stays current when the user
-        // flips back to it.
-        <div className="single-pane">
-          <TerminalView session={session} visible={active} />
-          <div className="off-screen">
-            <ArtifactsPanel
-              sessionId={session.sessionId}
-              artifactsDir={session.artifactsDir}
-              artifacts={session.artifacts}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="single-pane">
+      <PanelGroup
+        direction="horizontal"
+        autoSaveId={`ticket-web:${tabId}`}
+        // Without this, react-resizable-panels keeps complaining about
+        // server/client size mismatches when we drive sizes imperatively.
+        storage={memoryStorage}
+      >
+        <Panel
+          ref={termPanelRef}
+          defaultSize={60}
+          minSize={0}
+          collapsible
+          collapsedSize={0}
+        >
+          <TerminalView session={session} visible={active && view !== 'artifacts'} />
+        </Panel>
+        <PanelResizeHandle className={'resizer' + (view === 'split' ? '' : ' resizer-hidden')} />
+        <Panel
+          ref={artPanelRef}
+          defaultSize={40}
+          minSize={0}
+          collapsible
+          collapsedSize={0}
+        >
           <ArtifactsPanel
             sessionId={session.sessionId}
             artifactsDir={session.artifactsDir}
             artifacts={session.artifacts}
           />
-          <div className="off-screen">
-            <TerminalView session={session} visible={false} />
-          </div>
-        </div>
-      )}
+        </Panel>
+      </PanelGroup>
     </div>
   );
 }
+
+// We don't want react-resizable-panels persisting its own split position
+// across sessions — we manage that ourselves via the view state. Use a
+// memory-only storage that the library still accepts.
+const memoryStorage: Storage = {
+  length: 0,
+  clear() {},
+  getItem() { return null; },
+  key() { return null; },
+  removeItem() {},
+  setItem() {},
+} as Storage;
