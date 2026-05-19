@@ -182,26 +182,8 @@ button:hover { background: var(--bg-elev-2); }
   /* keeps child components mounted so their WS / state stays alive */
 }
 
-/* Narrow viewport tweaks */
-@media (max-width: 768px) {
-  .tab {
-    min-width: 80px;
-    max-width: 120px;
-    padding: 8px 10px;
-    font-size: 12px;
-  }
-  .view-btn { padding: 6px 10px; font-size: 12px; }
-  .artifacts-body {
-    /* On phones the artifact list takes too much horizontal space — stack
-       it on top of the renderer instead. */
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(80px, 30%) 1fr;
-  }
-  .artifacts-list {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-}
+/* (Narrow-viewport tweaks moved to end-of-file so source order wins
+   over the base .artifacts-body rule that follows.) */
 
 /* Artifacts pane ------------------------------------------------------ */
 
@@ -433,4 +415,26 @@ button:hover { background: var(--bg-elev-2); }
   background: var(--bg-elev-2);
   position: sticky;
   top: 0;
+}
+
+/* Narrow viewport tweaks (kept at end of file so they override the base
+   rules above at equal specificity). */
+@media (max-width: 768px) {
+  .tab {
+    min-width: 80px;
+    max-width: 120px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .view-btn { padding: 6px 10px; font-size: 12px; }
+  .artifacts-body {
+    /* On phones the artifact list takes too much horizontal space; stack
+       it on top of the renderer instead. */
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(80px, 30%) 1fr;
+  }
+  .artifacts-list {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
 }
