@@ -82,13 +82,24 @@ export function App() {
   }
 
   function handleClose(id: string) {
-    // Clear the persisted session id so a future tab with the same uuid
-    // (very unlikely) doesn't reattach by accident. The actual server-side
-    // PTY will idle out and be GC'd.
+    // Explicitly destroy the server-side session — there is no idle GC
+    // anymore, so without this the PTY would leak until server shutdown.
+    // `keepalive: true` lets the request finish even if React unmounts
+    // the tab (and thus closes the WS) immediately after.
+    let storedSession: string | null = null;
     try {
+      storedSession = localStorage.getItem('ticket-web:tab:' + id);
       localStorage.removeItem('ticket-web:tab:' + id);
     } catch {
       /* ignore */
+    }
+    if (storedSession) {
+      // /api/* is proxied to the backend by Vite in dev and served by the
+      // backend directly in prod, so a relative URL works in both modes.
+      fetch(`/api/sessions/${encodeURIComponent(storedSession)}`, {
+        method: 'DELETE',
+        keepalive: true,
+      }).catch(() => undefined);
     }
     setTabs((prev) => {
       const idx = prev.findIndex((t) => t.id === id);

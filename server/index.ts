@@ -28,8 +28,10 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
 const SESSIONS_ROOT = path.join(os.tmpdir(), 'ticket-web', 'sessions');
 const RECENT_BUFFER_BYTES = 256 * 1024;
-const SESSION_IDLE_MS = 60 * 60 * 1000; // 1h
 const HEARTBEAT_MS = 30 * 1000;
+// Sessions live until either the server shuts down, the client explicitly
+// destroys them (DELETE /api/sessions/:id), or claude itself exits. There
+// is no idle GC — closing or reloading the browser leaves the PTY running.
 
 const app = express();
 
@@ -59,6 +61,23 @@ app.get('/api/sessions', (_req, res) => {
       idleMs: Date.now() - s.lastActivity,
     })),
   });
+});
+
+// Explicit teardown — called by the client when the user closes a tab.
+// Idempotent; returns 204 whether or not the id was live.
+app.delete('/api/sessions/:id', async (req, res) => {
+  const state = sessions.get(req.params.id);
+  if (state) {
+    try { state.ptyProc.kill(); } catch { /* ignore */ }
+    await state.watcher.close().catch(() => undefined);
+    if (state.ws && state.ws.readyState === state.ws.OPEN) {
+      try { state.ws.close(4001, 'session destroyed'); } catch { /* ignore */ }
+    }
+    sessions.delete(state.id);
+    await rm(path.join(SESSIONS_ROOT, state.id), { recursive: true, force: true })
+      .catch(() => undefined);
+  }
+  res.status(204).end();
 });
 
 const httpServer = createServer(app);
@@ -303,24 +322,8 @@ wss.on('connection', async (ws, req) => {
   });
 });
 
-// GC: kill detached sessions idle > SESSION_IDLE_MS, and delete on-disk
-// session dirs that are not in our live map.
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, state] of sessions) {
-    if (state.ws) continue;
-    if (now - state.lastActivity > SESSION_IDLE_MS) {
-      try {
-        state.ptyProc.kill();
-      } catch {
-        /* ignore */
-      }
-      state.watcher.close().catch(() => undefined);
-      sessions.delete(id);
-    }
-  }
-}, 5 * 60 * 1000).unref();
-
+// Stale on-disk session dirs from prior crashes — anything > 24h old and
+// not in our live map. The live sessions themselves have no idle timeout.
 setInterval(async () => {
   try {
     const entries = await readdir(SESSIONS_ROOT).catch(() => [] as string[]);
@@ -338,6 +341,18 @@ setInterval(async () => {
     /* best effort */
   }
 }, 60 * 60 * 1000).unref();
+
+// When the server shuts down (SIGINT / SIGTERM), tear down every live
+// session so claude doesn't leak as an orphan process group.
+async function shutdown() {
+  for (const state of sessions.values()) {
+    try { state.ptyProc.kill(); } catch { /* ignore */ }
+    state.watcher.close().catch(() => undefined);
+  }
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 httpServer.listen(PORT, () => {
   console.log(`[ticket.web] http://localhost:${PORT}`);
