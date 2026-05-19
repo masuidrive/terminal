@@ -21,7 +21,13 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import * as pty from 'node-pty';
 
 import type { ServerMessage, ClientMessage, ArtifactFile } from '../shared/protocol.ts';
-import { ARTIFACTS_SYSTEM_PROMPT } from './system-prompt.ts';
+import { buildSystemPrompt } from './system-prompt.ts';
+
+// Pre-approved Bash patterns for the spawned claude. Each pattern is what
+// claude code's permission system matches against a tool invocation; "Bash"
+// alone would gate every shell command, while "Bash(tmux *)" approves only
+// commands whose argv starts with `tmux`. Keep this list narrow.
+const ALLOWED_TOOLS = ['Bash(tmux *)'].join(',');
 
 const PORT = Number(process.env.SERVER_PORT ?? 7681);
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
@@ -152,7 +158,11 @@ async function createSession(): Promise<SessionState> {
   const rows = 32;
   const ptyProc = pty.spawn(
     CLAUDE_BIN,
-    ['--append-system-prompt', ARTIFACTS_SYSTEM_PROMPT, '--add-dir', artifactsDir],
+    [
+      '--append-system-prompt', buildSystemPrompt(),
+      '--add-dir', artifactsDir,
+      '--allowedTools', ALLOWED_TOOLS,
+    ],
     {
       name: 'xterm-256color',
       cols,

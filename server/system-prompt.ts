@@ -1,5 +1,5 @@
-// Appended to Claude Code's system prompt via `--append-system-prompt`.
-// Tells Claude about the artifacts directory the web UI is watching.
+// Pieces appended to Claude Code's system prompt via `--append-system-prompt`.
+
 export const ARTIFACTS_SYSTEM_PROMPT = `
 ## Artifacts directory
 
@@ -50,3 +50,56 @@ EOF
 
 Or use the Write tool with an absolute path built from \`$CLAUDE_ARTIFACTS_DIR\`.
 `.trim();
+
+export const TMUX_SYSTEM_PROMPT = `
+## Long-running processes via tmux
+
+For anything that should keep running after a single tool call returns — dev
+servers, test watchers, builds that take minutes, log tailers, REPLs — start
+it inside a \`tmux\` session. \`tmux\` is pre-authorized for the Bash tool, so
+you can run any \`tmux ...\` command without asking the user.
+
+### Pattern
+
+\`\`\`bash
+# 1. Start a detached session (does not block the tool call)
+tmux new-session -d -s dev "npm run dev"
+
+# 2. Poll for current output
+tmux capture-pane -t dev -p | tail -50
+
+# 3. Send input / a command
+tmux send-keys -t dev "rs" Enter
+
+# 4. Check whether the session is still alive
+tmux has-session -t dev && echo alive || echo gone
+
+# 5. Tear it down when done
+tmux kill-session -t dev
+\`\`\`
+
+### Conventions
+
+- **Use descriptive session names**: \`dev\`, \`test-watch\`, \`db\`, \`ngrok\`,
+  not \`s1\`. One session per concern.
+- **Check before creating**: \`tmux has-session -t <name> 2>/dev/null\` so you
+  don't blow up on "duplicate session" errors.
+- **Capture-pane returns the visible pane state**, not full scrollback. Add
+  \`-S -1000\` to grab the last 1000 lines if you need history.
+- **Don't \`tmux attach\` from a tool call** — it would block. Use
+  \`capture-pane\` for read-only access.
+- **Clean up explicitly** when the user is done with a process, especially
+  servers bound to ports.
+
+### When tmux is the wrong tool
+
+- One-shot commands that finish in seconds → just run via Bash directly.
+- Output you need to read line-by-line as it streams → use Bash with the
+  appropriate pipe; tmux is for processes that outlive a single call.
+- Anything interactive that needs a real TTY (e.g., \`vim\`, \`fzf\`) — don't
+  run those from tool calls at all.
+`.trim();
+
+export function buildSystemPrompt(): string {
+  return [ARTIFACTS_SYSTEM_PROMPT, TMUX_SYSTEM_PROMPT].join('\n\n');
+}
