@@ -8,7 +8,9 @@ const BACKEND_PORT = Number(process.env.SERVER_PORT ?? 7681);
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    host: '0.0.0.0',
+    port: 5172,
+    strictPort: true,
     proxy: {
       '/ws': {
         target: `ws://localhost:${BACKEND_PORT}`,

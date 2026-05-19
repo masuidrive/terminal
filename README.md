@@ -27,8 +27,9 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:5173>. The Vite dev server proxies WebSocket and
-`/artifacts/*` to the Node backend on port 7681.
+Open <http://localhost:5172> (the dev server binds to `0.0.0.0:5172` so you
+can also hit it from another device on the LAN). Vite proxies WebSocket
+and `/artifacts/*` to the Node backend on port 7681.
 
 ## Configuration
 
