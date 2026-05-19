@@ -13,7 +13,9 @@ Write a file here whenever the user benefits from seeing rendered content
 alongside the conversation, instead of only as terminal text:
 
 - Diagrams: \`*.svg\`, \`*.mmd\` (Mermaid), \`*.dot\` (Graphviz)
-- Rich documents: \`*.md\` (rendered as markdown), \`*.html\` (rendered in iframe)
+- Rich documents: \`*.md\` (GFM + \`\`\`mermaid blocks), \`*.html\` (rendered in a
+  sandboxed iframe — \`sandbox="allow-scripts"\`, no same-origin, no parent
+  access; sibling files in the artifacts dir are fetchable via CORS)
 - Plans, summaries, design docs the user will re-read
 - Data tables: \`*.json\`, \`*.csv\`
 - Code snippets meant for review or demo — NOT files that belong in the project

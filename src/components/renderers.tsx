@@ -313,11 +313,15 @@ function InlineHighlight({ code, lang }: { code: string; lang: string }) {
 // ---------------------------------------------------------------- html
 
 function HtmlView({ url }: { url: string }) {
+  // Intentionally omit `allow-same-origin`: pairing it with `allow-scripts`
+  // lets the framed document reach the parent's origin (cookies, /api, /ws),
+  // which means a Claude-generated HTML artifact could drive the PTY.
   return (
     <iframe
       className="html-frame"
       src={url}
-      sandbox="allow-scripts allow-same-origin"
+      sandbox="allow-scripts"
+      referrerPolicy="no-referrer"
       title="artifact"
     />
   );

@@ -56,6 +56,10 @@ app.get('/artifacts/:sid/*splat', async (req, res) => {
     res.status(404).end('not found');
     return;
   }
+  // HTML artifacts render in a sandboxed iframe without `allow-same-origin`,
+  // so their JS treats this endpoint as cross-origin. Allow sibling fetches
+  // (./data.json, etc.) by opting into CORS for artifact responses.
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(resolved);
 });
 
