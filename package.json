@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev": "node scripts/dev.mjs",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite",
     "build": "tsc -b && vite build",

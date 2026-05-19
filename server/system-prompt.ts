@@ -51,7 +51,30 @@ EOF
 Or use the Write tool with an absolute path built from \`$CLAUDE_ARTIFACTS_DIR\`.
 `.trim();
 
-export const TMUX_SYSTEM_PROMPT = `
+function tmuxSection(yolo: boolean): string {
+  // In YOLO mode the parent claude was started with
+  // --dangerously-skip-permissions. Any child claude spawned inside a tmux
+  // session is a separate process that does NOT inherit that flag from
+  // its parent — it has to be passed on the command line. We tell claude
+  // about it so sub-claudes behave the same as the foreground one.
+  const yoloNote = yolo
+    ? `
+
+### YOLO mode is active
+
+The user started this session with \`--yolo\` (\`--dangerously-skip-permissions\`).
+**When you spawn another \`claude\` instance via tmux**, pass the same flag so
+the child runs without permission prompts as well; otherwise it will hang on
+the first tool use waiting for input that never arrives.
+
+\`\`\`bash
+tmux new-session -d -s subagent \\
+  "claude --dangerously-skip-permissions -p 'do the thing'"
+\`\`\`
+`
+    : '';
+
+  return `
 ## Long-running processes via tmux
 
 For anything that should keep running after a single tool call returns — dev
@@ -97,9 +120,10 @@ tmux kill-session -t dev
 - Output you need to read line-by-line as it streams → use Bash with the
   appropriate pipe; tmux is for processes that outlive a single call.
 - Anything interactive that needs a real TTY (e.g., \`vim\`, \`fzf\`) — don't
-  run those from tool calls at all.
+  run those from tool calls at all.${yoloNote}
 `.trim();
+}
 
-export function buildSystemPrompt(): string {
-  return [ARTIFACTS_SYSTEM_PROMPT, TMUX_SYSTEM_PROMPT].join('\n\n');
+export function buildSystemPrompt(options: { yolo: boolean } = { yolo: false }): string {
+  return [ARTIFACTS_SYSTEM_PROMPT, tmuxSection(options.yolo)].join('\n\n');
 }

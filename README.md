@@ -24,7 +24,9 @@ whenever something is better viewed alongside the chat.
 
 ```bash
 npm install
-npm run dev
+npm run dev                # normal: claude prompts for permissions
+npm run dev -- --yolo      # YOLO: claude spawned with --dangerously-skip-permissions
+YOLO=1 npm run dev         # same as above, env-var form
 ```
 
 Open <http://localhost:5172> (the dev server binds to `0.0.0.0:5172` so you

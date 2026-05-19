@@ -32,6 +32,7 @@ const ALLOWED_TOOLS = ['Bash(tmux *)'].join(',');
 const PORT = Number(process.env.SERVER_PORT ?? 7681);
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
+const YOLO = process.env.YOLO === '1';
 const SESSIONS_ROOT = path.join(os.tmpdir(), 'ticket-web', 'sessions');
 const RECENT_BUFFER_BYTES = 256 * 1024;
 const HEARTBEAT_MS = 30 * 1000;
@@ -156,13 +157,20 @@ async function createSession(): Promise<SessionState> {
 
   const cols = 120;
   const rows = 32;
+  const claudeArgs = [
+    '--append-system-prompt', buildSystemPrompt({ yolo: YOLO }),
+    '--add-dir', artifactsDir,
+  ];
+  if (YOLO) {
+    // YOLO mode: claude was started with --yolo (or YOLO=1). Skip every
+    // permission prompt instead of pre-approving specific patterns.
+    claudeArgs.push('--dangerously-skip-permissions');
+  } else {
+    claudeArgs.push('--allowedTools', ALLOWED_TOOLS);
+  }
   const ptyProc = pty.spawn(
     CLAUDE_BIN,
-    [
-      '--append-system-prompt', buildSystemPrompt(),
-      '--add-dir', artifactsDir,
-      '--allowedTools', ALLOWED_TOOLS,
-    ],
+    claudeArgs,
     {
       name: 'xterm-256color',
       cols,
@@ -369,4 +377,5 @@ httpServer.listen(PORT, () => {
   console.log(`[ticket.web] sessions: ${SESSIONS_ROOT}`);
   console.log(`[ticket.web] project:  ${PROJECT_DIR}`);
   console.log(`[ticket.web] claude:   ${CLAUDE_BIN}`);
+  console.log(`[ticket.web] mode:     ${YOLO ? '🐉 YOLO (--dangerously-skip-permissions)' : 'normal (tmux pre-approved)'}`);
 });
