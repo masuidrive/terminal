@@ -165,6 +165,7 @@ function TabPanel({ tabId, active }: { tabId: string; active: boolean }) {
         <Panel defaultSize={40} minSize={20}>
           <ArtifactsPanel
             sessionId={session.sessionId}
+            artifactsDir={session.artifactsDir}
             artifacts={session.artifacts}
           />
         </Panel>

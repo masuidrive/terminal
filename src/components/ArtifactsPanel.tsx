@@ -4,10 +4,11 @@ import { ArtifactRenderer } from './renderers.tsx';
 
 interface Props {
   sessionId: string | null;
+  artifactsDir: string | null;
   artifacts: ArtifactFile[];
 }
 
-export function ArtifactsPanel({ sessionId, artifacts }: Props) {
+export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   // Follow-mode: when a new/updated artifact arrives and the user hasn't
   // pinned a selection, jump to it.
@@ -20,9 +21,11 @@ export function ArtifactsPanel({ sessionId, artifacts }: Props) {
   }, [artifacts, follow]);
 
   const file = artifacts.find((f) => f.path === selected) ?? null;
-  const url = file && sessionId
-    ? `/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`
-    : null;
+  const url =
+    file && sessionId
+      ? `/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`
+      : null;
+  const absolutePath = file && artifactsDir ? `${artifactsDir}/${file.path}` : null;
 
   return (
     <div className="artifacts">
@@ -63,18 +66,79 @@ export function ArtifactsPanel({ sessionId, artifacts }: Props) {
             </button>
           ))}
         </div>
-        <div className="artifact-view">
+        <div className="artifact-pane">
           {file && url ? (
-            <ArtifactRenderer
-              key={`${file.path}@${file.mtime}`}
-              url={url}
-              file={file}
-            />
+            <>
+              <ArtifactPathBar path={file.path} absolute={absolutePath} />
+              <div className="artifact-view">
+                <ArtifactRenderer
+                  key={`${file.path}@${file.mtime}`}
+                  url={url}
+                  file={file}
+                />
+              </div>
+            </>
           ) : (
             <div className="artifact-empty">Select an artifact</div>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ArtifactPathBar({
+  path,
+  absolute,
+}: {
+  path: string;
+  absolute: string | null;
+}) {
+  const [copied, setCopied] = useState<'rel' | 'abs' | null>(null);
+
+  async function copy(value: string, which: 'rel' | 'abs') {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(which);
+      setTimeout(() => setCopied((c) => (c === which ? null : c)), 1500);
+    } catch {
+      // clipboard may be blocked over http or in old browsers
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        setCopied(which);
+        setTimeout(() => setCopied((c) => (c === which ? null : c)), 1500);
+      } catch {
+        /* give up */
+      }
+      ta.remove();
+    }
+  }
+
+  return (
+    <div className="artifact-pathbar" title={absolute ?? path}>
+      <span className="artifact-pathbar-path">{path}</span>
+      <button
+        className="artifact-pathbar-copy"
+        onClick={() => copy(path, 'rel')}
+        title="Copy relative path"
+      >
+        {copied === 'rel' ? '✓ copied' : 'name'}
+      </button>
+      {absolute && (
+        <button
+          className="artifact-pathbar-copy"
+          onClick={() => copy(absolute, 'abs')}
+          title={`Copy absolute path\n${absolute}`}
+        >
+          {copied === 'abs' ? '✓ copied' : 'abs path'}
+        </button>
+      )}
     </div>
   );
 }

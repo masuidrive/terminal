@@ -168,9 +168,49 @@ button:hover { background: var(--bg-elev-2); }
 .artifact-name { color: var(--fg); }
 .artifact-meta { color: var(--fg-dim); font-size: 11px; }
 
+.artifact-pane {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  min-width: 0;
+}
+.artifact-pathbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-dim);
+  min-width: 0;
+}
+.artifact-pathbar-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.artifact-pathbar-copy {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  flex-shrink: 0;
+}
+.artifact-pathbar-copy:hover {
+  color: var(--fg);
+  border-color: var(--accent-2);
+}
 .artifact-view {
   overflow: auto;
   padding: 16px 20px;
+  min-width: 0;
 }
 .artifact-view > * { max-width: 100%; }
 .artifact-empty {
@@ -187,6 +227,15 @@ button:hover { background: var(--bg-elev-2); }
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 12px;
+}
+.artifact-note {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 12px;
 }
 
 /* Renderers ---------------------------------------------------------- */
@@ -234,4 +283,72 @@ button:hover { background: var(--bg-elev-2); }
   padding: 12px;
   border-radius: 6px;
   overflow: auto;
+}
+
+/* shiki-rendered code blocks (CodeView, InlineHighlight) */
+.code-block { overflow: auto; }
+.code-block .shiki {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 12px 0;
+  border-radius: 6px;
+  overflow: auto;
+  /* shiki injects its own background-color via inline style; let it. */
+}
+.code-block .shiki code {
+  display: block;
+  counter-reset: line;
+}
+.code-block .shiki .line {
+  display: block;
+  padding-left: 4.5em;
+  position: relative;
+  white-space: pre;
+}
+.code-block .shiki .line::before {
+  content: attr(data-line);
+  position: absolute;
+  left: 0;
+  width: 3.5em;
+  padding-right: 0.5em;
+  text-align: right;
+  color: #6e7681;
+  user-select: none;
+  opacity: 0.7;
+}
+.code-block .shiki .line:hover::before { opacity: 1; }
+/* inline (in-markdown) blocks: no line numbers, tighter padding */
+.code-block.inline .shiki .line {
+  padding-left: 12px;
+}
+.code-block.inline .shiki .line::before {
+  display: none;
+}
+
+/* Mermaid */
+.mermaid-block {
+  background: #1e1e2e;
+  padding: 12px;
+  border-radius: 6px;
+  overflow: auto;
+  text-align: center;
+}
+.mermaid-block svg { max-width: 100%; height: auto; }
+
+/* CSV table */
+.csv-table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.csv-table th, .csv-table td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+.csv-table th {
+  background: var(--bg-elev-2);
+  position: sticky;
+  top: 0;
 }

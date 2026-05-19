@@ -11,6 +11,9 @@ const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000] as const;
 
 export interface SessionApi {
   sessionId: string | null;
+  /** Absolute path of this session's artifacts directory on the server's
+   *  filesystem. Used by the UI for the "copy absolute path" button. */
+  artifactsDir: string | null;
   artifacts: ArtifactFile[];
   connected: boolean;
   onPtyData: (cb: (data: string) => void) => () => void;
@@ -59,6 +62,7 @@ export function useSession(tabId: string, active: boolean): SessionApi {
   const closedByUserRef = useRef(false);
 
   const [sessionId, setSessionId] = useState<string | null>(() => readStoredSession(tabId));
+  const [artifactsDir, setArtifactsDir] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
   const [connected, setConnected] = useState(false);
 
@@ -108,6 +112,7 @@ export function useSession(tabId: string, active: boolean): SessionApi {
         switch (msg.ch) {
           case 'hello':
             setSessionId(msg.sessionId);
+            setArtifactsDir(msg.artifactsDir);
             writeStoredSession(tabId, msg.sessionId);
             break;
           case 'pty':
@@ -196,7 +201,7 @@ export function useSession(tabId: string, active: boolean): SessionApi {
     };
   }, []);
 
-  return { sessionId, artifacts, connected, onPtyData, sendInput, sendResize };
+  return { sessionId, artifactsDir, artifacts, connected, onPtyData, sendInput, sendResize };
 }
 
 function mergeFile(prev: ArtifactFile[], next: ArtifactFile): ArtifactFile[] {
