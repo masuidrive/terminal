@@ -10,9 +10,9 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { registerWrappedLinkProvider } from '../terminalLinks.ts';
 import type { SessionApi } from '../hooks/useSession.ts';
 
 interface Props {
@@ -48,7 +48,8 @@ export function TerminalView({ session, visible }: Props) {
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      term.loadAddon(new WebLinksAddon());
+      // Custom link provider that also clicks URLs broken across lines.
+      registerWrappedLinkProvider(term);
       const u11 = new Unicode11Addon();
       term.loadAddon(u11);
       term.unicode.activeVersion = '11';
