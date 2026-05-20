@@ -13,6 +13,8 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
   // Follow-mode: when a new/updated artifact arrives and the user hasn't
   // pinned a selection, jump to it.
   const [follow, setFollow] = useState(true);
+  // Collapse the file list to give the preview the full pane width.
+  const [listCollapsed, setListCollapsed] = useState(false);
 
   useEffect(() => {
     if (!follow) return;
@@ -20,16 +22,33 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
     else setSelected(null);
   }, [artifacts, follow]);
 
-  const file = artifacts.find((f) => f.path === selected) ?? null;
+  // With 0-1 artifacts there's no list to pick from, so fall back to the
+  // sole artifact.
+  const file =
+    artifacts.find((f) => f.path === selected) ??
+    (artifacts.length === 1 ? artifacts[0]! : null);
   const url =
     file && sessionId
       ? `/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`
       : null;
   const absolutePath = file && artifactsDir ? `${artifactsDir}/${file.path}` : null;
 
+  // The file list only earns its column with 2+ artifacts.
+  const hasList = artifacts.length >= 2;
+  const hideList = !hasList || listCollapsed;
+
   return (
-    <div className="artifacts">
+    <div className={'artifacts' + (hideList ? ' list-collapsed' : '')}>
       <div className="artifacts-header">
+        {hasList && (
+          <button
+            className="artifacts-collapse"
+            onClick={() => setListCollapsed((c) => !c)}
+            title={listCollapsed ? 'Show file list' : 'Hide file list'}
+          >
+            {listCollapsed ? '»' : '«'}
+          </button>
+        )}
         <span>Artifacts</span>
         <span style={{ flex: 1 }} />
         <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -43,13 +62,6 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
       </div>
       <div className="artifacts-body">
         <div className="artifacts-list">
-          {artifacts.length === 0 && (
-            <div className="artifact-empty" style={{ height: 'auto', padding: 12 }}>
-              No artifacts yet.
-              <br />
-              Claude writes files to <code>$CLAUDE_ARTIFACTS_DIR</code>.
-            </div>
-          )}
           {artifacts.map((f) => (
             <button
               key={f.path}
@@ -78,6 +90,12 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
                 />
               </div>
             </>
+          ) : artifacts.length === 0 ? (
+            <div className="artifact-empty">
+              No artifacts yet.
+              <br />
+              Claude writes files to <code>$CLAUDE_ARTIFACTS_DIR</code>.
+            </div>
           ) : (
             <div className="artifact-empty">Select an artifact</div>
           )}

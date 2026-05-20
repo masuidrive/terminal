@@ -2,6 +2,10 @@
 // One WS connection per terminal session. The session id is assigned by the
 // server in the `hello` message after the socket opens.
 
+// Which CLI agent a session runs. Chosen client-side via the startup
+// modal and passed to the server as a `?agent=` query param on /ws.
+export type AgentKind = 'claude' | 'codex';
+
 export interface ArtifactFile {
   path: string;       // relative to the session's artifacts dir
   size: number;

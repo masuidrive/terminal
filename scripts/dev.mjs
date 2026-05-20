@@ -17,12 +17,16 @@ const yolo = argv.includes('--yolo') || process.env.YOLO === '1';
 
 if (yolo) {
   console.log(
-    '\x1b[33m[ticket.web] 🐉 YOLO mode: claude will be spawned with --dangerously-skip-permissions\x1b[0m'
+    '\x1b[33m[ticket.web] 🐉 YOLO mode: the agent is spawned without permission prompts\x1b[0m'
   );
 }
 
 const env = { ...process.env };
 if (yolo) env.YOLO = '1';
+// Dev is always LAN-exposed: the client talks to the backend directly, so
+// it must be reachable from a phone on the same network.
+env.LAN = '1';
+if (argv.includes('--debug')) env.DEBUG = '1';
 
 const child = spawn(
   'npx',

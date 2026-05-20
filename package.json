@@ -1,13 +1,21 @@
 {
-  "name": "ticket-web",
+  "name": "terminal",
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "bin": {
+    "terminal": "./scripts/start.mjs"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:server": "tsx watch server/index.ts",
     "dev:client": "vite",
     "build": "tsc -b && vite build",
+    "start": "node scripts/start.mjs",
+    "prepare": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit"
   },
@@ -15,6 +23,7 @@
     "chokidar": "^4.0.3",
     "express": "^5.1.0",
     "node-pty": "^1.0.0",
+    "tsx": "^4.19.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -38,7 +47,6 @@
     "react-resizable-panels": "^2.1.7",
     "remark-gfm": "^4.0.0",
     "shiki": "^1.24.0",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.3"
   }

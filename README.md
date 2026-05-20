@@ -1,74 +1,114 @@
-# ticket.web
+# terminal
 
-Personal web frontend for `claude` (Claude Code) CLI. xterm.js terminal on the
-left, live artifacts pane on the right, tabs on top.
+Run **Claude Code** or **OpenAI Codex** in your browser — a real terminal on
+the left, a live artifacts pane on the right, tabs on top. Works on desktop
+and is built to be usable from a phone.
 
-The backend spawns `claude` in a PTY per tab, watches a dedicated
-artifacts directory, and streams everything over WebSocket. Claude is told
-about the directory via `--append-system-prompt` and writes files there
-whenever something is better viewed alongside the chat.
-
-## Layout
+The backend spawns the chosen CLI agent in a PTY per tab, watches a dedicated
+artifacts directory, and streams everything over WebSocket.
 
 ```
-┌─ [claude 1] [claude 2] [+] ─────────────────────────┐
-│                          │                          │
-│   xterm.js               │   Artifacts              │
-│   (real claude TUI)      │   ┌──────┬─ rendered ─┐  │
-│                          │   │ list │            │  │
-│                          │   │      │            │  │
-└──────────────────────────┴──────────────────────────┘
+┌─ [claude 1] [codex 2] [+] ──────────────┬────────────────────────┐
+│                                         │  Artifacts             │
+│   xterm.js  (real claude / codex TUI)   │  ┌──────┬─ rendered ─┐ │
+│                                         │  │ list │            │ │
+│   [ Esc ][ C-b ][ / ][ - ][ _ ][ ↑ ]    │  └──────┴────────────┘ │
+└─────────────────────────────────────────┴────────────────────────┘
 ```
 
 ## Quick start
 
 ```bash
-npm install
-npm run dev                # normal: claude prompts for permissions
-npm run dev -- --yolo      # YOLO: claude spawned with --dangerously-skip-permissions
-YOLO=1 npm run dev         # same as above, env-var form
+npx github:masuidrive/terminal
 ```
 
-Open <http://localhost:5172> (the dev server binds to `0.0.0.0:5172` so you
-can also hit it from another device on the LAN). Vite proxies WebSocket
-and `/artifacts/*` to the Node backend on port 7681.
+Run it from the project directory you want the agent to work in. It prints a
+URL — open it in a browser:
 
-## Configuration
+```
+  terminal running at:
+    http://localhost:7681/
+```
 
-Backend env vars:
+On first run `npx` clones the repo, installs dependencies (this compiles the
+`node-pty` native module) and builds the client, so it takes a minute. Later
+runs are cached and start instantly.
 
-| Var               | Default                                | Purpose                                |
-|-------------------|----------------------------------------|----------------------------------------|
-| `SERVER_PORT`     | `7681`                                 | Backend HTTP+WS port                   |
-| `CLAUDE_BIN`      | `claude`                               | Path to the `claude` binary            |
-| `PROJECT_DIR`     | `process.cwd()`                        | Working directory passed to claude     |
+When a tab opens, a modal asks which agent to start — **Claude Code** or
+**Codex**.
 
-Artifact storage: `$TMPDIR/ticket-web/sessions/<uuid>/artifacts/`. Old
-session dirs are GC'd after 24h.
+## Requirements
 
-## Architecture notes
+- Node.js **≥ 20.11**
+- The CLI you want to use on your `PATH`: [`claude`](https://claude.com/claude-code)
+  and/or [`codex`](https://developers.openai.com/codex/cli)
+- A C toolchain for the `node-pty` native build on first install
+  (`python3`, `make`, a C/C++ compiler)
+- macOS or Linux (PTY-based; Windows is untested)
+
+## Options
+
+```bash
+npx github:masuidrive/terminal --lan      # also reachable from other devices on the LAN
+npx github:masuidrive/terminal --yolo     # spawn the agent without permission prompts
+npx github:masuidrive/terminal --debug    # verbose logs + per-request access log
+```
+
+By default the server binds to `127.0.0.1` (localhost only). `--lan` binds all
+interfaces so you can open it from a phone on the same network — the URL list
+then includes the LAN / Tailscale addresses.
+
+Environment variables:
+
+| Var           | Default         | Purpose                            |
+|---------------|-----------------|------------------------------------|
+| `SERVER_PORT` | `7681`          | HTTP + WebSocket port              |
+| `CLAUDE_BIN`  | `claude`        | Path to the `claude` binary        |
+| `CODEX_BIN`   | `codex`         | Path to the `codex` binary         |
+| `PROJECT_DIR` | `process.cwd()` | Working directory passed to agents |
+
+## Artifacts
+
+The artifacts pane renders files the agent writes to `$CLAUDE_ARTIFACTS_DIR`:
+
+- Markdown (GFM + ```mermaid blocks), HTML (sandboxed iframe), SVG / images
+- Mermaid diagrams, JSON / CSV tables, syntax-highlighted code
+
+Claude Code is told about the directory via `--append-system-prompt`. Codex
+is spawned plain, so artifacts only auto-populate for Claude sessions.
+
+## Development
+
+```bash
+npm install
+npm run dev                # Vite dev server + backend
+npm run dev -- --yolo      # skip the agent's permission prompts
+npm run dev -- --debug     # verbose backend logs
+```
+
+Open <http://localhost:5172>. Vite proxies `/ws`, `/api` and `/artifacts` to
+the backend on `7681`; in dev the backend is always LAN-exposed.
+
+## How it works
 
 - **One PTY per tab.** Each tab opens its own WebSocket; the server spawns
-  `claude --append-system-prompt <…> --add-dir <artifacts>` in a PTY.
-- **Artifacts are files on disk.** No streaming JSON parsing. Claude writes
-  to `$CLAUDE_ARTIFACTS_DIR`; chokidar watches the dir and emits add /
-  change / unlink events to the client.
-- **Renderers dispatch on extension.** Markdown → react-markdown; HTML →
-  sandboxed iframe; SVG/images → native; Mermaid → mermaid.js render;
-  JSON/CSV → table; everything else → code preview.
-- **System prompt addition** lives in `server/system-prompt.ts` so it's
-  easy to tweak.
+  `claude` or `codex` in a PTY. Sessions outlive the socket — a dropped
+  connection reattaches to the same PTY (with a connection-timeout guard and
+  reconnect-on-wake so a slept phone recovers without a reload).
+- **Artifacts are files on disk.** chokidar watches `$CLAUDE_ARTIFACTS_DIR`
+  and streams add / change / unlink events to the client.
+- **HTML artifacts** render in an iframe sandboxed with `allow-scripts` only
+  (no `allow-same-origin`), so a generated page can't reach the app's origin.
+- **Production is one process.** `prepare` builds the client; the server
+  serves it and the API on a single port. Dev uses Vite instead.
 
-## Why interactive `claude` instead of `claude -p`?
+## Why interactive agents instead of `-p` / SDK?
 
-After 2026-06-15, programmatic usage (`claude -p`, Agent SDK, third-party
-apps via Agent SDK) draws from a separate monthly Agent SDK credit billed
-at API rates. Interactive Claude Code still runs against the normal
-subscription limits. xterm.js + PTY keeps us on the interactive side, and
-it gives us skills/plugins/MCP/hooks for free.
+xterm.js + PTY keeps the agent on the **interactive** side — the normal
+subscription, plus skills / plugins / MCP / hooks — instead of the separate
+programmatic / Agent SDK billing.
 
-## ToS
+## Note
 
-This is meant for **personal use on your own machine**. Sharing one
-subscription across multiple users via this UI would violate Anthropic's
-subscription terms.
+Meant for **personal use on your own machine**. Sharing one subscription
+across multiple users via this UI would violate the provider's terms.

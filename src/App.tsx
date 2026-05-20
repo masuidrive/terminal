@@ -9,9 +9,11 @@ import { Tabs } from './components/Tabs.tsx';
 import { TerminalView } from './components/Terminal.tsx';
 import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
 import { KeyboardToolbar } from './components/KeyboardToolbar.tsx';
+import { AgentModal } from './components/AgentModal.tsx';
 import { useSession } from './hooks/useSession.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
-import type { TabState } from './types.ts';
+import { useSoftKeyboard } from './hooks/useSoftKeyboard.ts';
+import type { AgentKind, TabState } from './types.ts';
 
 const TABS_KEY = 'ticket-web:tabs';
 const ACTIVE_KEY = 'ticket-web:activeTabId';
@@ -47,7 +49,9 @@ function uuid(): string {
 }
 
 function newTab(idx: number): TabState {
-  return { id: uuid(), title: `claude ${idx}` };
+  // Neutral until the agent modal resolves; the first word is then
+  // swapped for the chosen agent's name (e.g. "session 2" -> "codex 2").
+  return { id: uuid(), title: `session ${idx}` };
 }
 
 function loadTabs(): { tabs: TabState[]; activeId: string } {
@@ -78,6 +82,9 @@ export function App() {
   const [counter, setCounter] = useState(initial.tabs.length + 1);
 
   const isNarrow = useMediaQuery('(max-width: 1023px)');
+  // The soft-keyboard toolbar is shown only while the on-screen keyboard
+  // is actually up — a keyboard being open already implies a touch device.
+  const keyboardOpen = useSoftKeyboard();
 
   // PROJECT_DIR is process-wide on the server side, so a single fetch on
   // mount is enough — it doesn't change per tab.
@@ -173,6 +180,16 @@ export function App() {
     });
   }
 
+  function handleChooseAgent(id: string, agent: AgentKind) {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? { ...t, agent, title: t.title.replace(/^\S+/, agent) }
+          : t
+      )
+    );
+  }
+
   return (
     <div className="app">
       <Tabs
@@ -195,7 +212,9 @@ export function App() {
               tabId={t.id}
               active={t.id === activeId}
               view={view}
-              isNarrow={isNarrow}
+              keyboardOpen={keyboardOpen}
+              agent={t.agent ?? null}
+              onChooseAgent={(a) => handleChooseAgent(t.id, a)}
             />
           ))}
       </div>
@@ -211,17 +230,24 @@ function TabPanel({
   tabId,
   active,
   view,
-  isNarrow,
+  keyboardOpen,
+  agent,
+  onChooseAgent,
 }: {
   tabId: string;
   active: boolean;
   view: ViewMode;
-  isNarrow: boolean;
+  keyboardOpen: boolean;
+  agent: AgentKind | null;
+  onChooseAgent: (agent: AgentKind) => void;
 }) {
-  const session = useSession(tabId, true);
+  const session = useSession(tabId, true, agent);
+  // A fresh tab with no agent and no server session yet needs the user to
+  // pick an agent before anything connects.
+  const showAgentModal = agent == null && session.sessionId == null;
   // Surface WS state so debugging "blank screen" cases doesn't need
   // DevTools — a banner appears when we're disconnected.
-  const showStatus = !session.connected;
+  const showStatus = !showAgentModal && !session.connected;
   const termPanelRef = useRef<ImperativePanelHandle>(null);
   const artPanelRef = useRef<ImperativePanelHandle>(null);
 
@@ -240,9 +266,9 @@ function TabPanel({
     }
   }, [view]);
 
-  // Soft-keyboard toolbar: only useful when the terminal pane is visible
-  // and the user is on a touch / narrow viewport.
-  const showToolbar = isNarrow && view !== 'artifacts';
+  // Soft-keyboard toolbar: only while the keyboard is up and the terminal
+  // pane is visible.
+  const showToolbar = keyboardOpen && view !== 'artifacts';
 
   return (
     <div
@@ -296,6 +322,7 @@ function TabPanel({
         </PanelGroup>
       </div>
       {showToolbar && <KeyboardToolbar session={session} />}
+      {showAgentModal && <AgentModal onPick={onChooseAgent} />}
     </div>
   );
 }

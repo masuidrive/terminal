@@ -20,13 +20,36 @@ import { WebSocketServer, WebSocket } from 'ws';
 import chokidar, { type FSWatcher } from 'chokidar';
 import * as pty from 'node-pty';
 
-import type { ServerMessage, ClientMessage, ArtifactFile } from '../shared/protocol.ts';
+import type { ServerMessage, ClientMessage, ArtifactFile, AgentKind } from '../shared/protocol.ts';
 import { buildSystemPrompt } from './system-prompt.ts';
 
 const PORT = Number(process.env.SERVER_PORT ?? 7681);
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
+const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
 const YOLO = process.env.YOLO === '1';
+const DEBUG = process.env.DEBUG === '1';
+// localhost-only by default; the `--lan` flag binds all interfaces so the
+// UI is reachable from a phone / other device on the same network.
+const LAN = process.env.LAN === '1';
+const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
+
+// Binary + argv for a given agent. Claude gets the artifacts system prompt
+// and --add-dir; codex is spawned plain (it has no equivalent flags), so
+// the artifacts panel only auto-populates for claude sessions.
+function agentCommand(agent: AgentKind, artifactsDir: string): { bin: string; args: string[] } {
+  if (agent === 'codex') {
+    const args: string[] = [];
+    if (YOLO) args.push('--dangerously-bypass-approvals-and-sandbox');
+    return { bin: CODEX_BIN, args };
+  }
+  const args = [
+    '--append-system-prompt', buildSystemPrompt(),
+    '--add-dir', artifactsDir,
+  ];
+  if (YOLO) args.push('--dangerously-skip-permissions');
+  return { bin: CLAUDE_BIN, args };
+}
 const SESSIONS_ROOT = path.join(os.tmpdir(), 'ticket-web', 'sessions');
 const RECENT_BUFFER_BYTES = 256 * 1024;
 const HEARTBEAT_MS = 30 * 1000;
@@ -35,6 +58,14 @@ const HEARTBEAT_MS = 30 * 1000;
 // is no idle GC — closing or reloading the browser leaves the PTY running.
 
 const app = express();
+
+// Per-request access log, only under --debug.
+if (DEBUG) {
+  app.use((req, _res, next) => {
+    console.log(`[req] ${req.method} ${req.url}`);
+    next();
+  });
+}
 
 app.get('/artifacts/:sid/*splat', async (req, res) => {
   const sid = req.params.sid;
@@ -88,6 +119,15 @@ app.delete('/api/sessions/:id', async (req, res) => {
   }
   res.status(204).end();
 });
+
+// Serve the built client. In dev this directory doesn't exist (vite serves
+// the client and proxies /api + /ws + /artifacts here instead); in a
+// production / npx run `prepare` has built it and the server is the only
+// process, so it serves the SPA on the same origin as the API.
+const CLIENT_DIR = path.join(import.meta.dirname, '..', 'dist');
+if (existsSync(CLIENT_DIR)) {
+  app.use(express.static(CLIENT_DIR));
+}
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({
@@ -151,7 +191,7 @@ async function listArtifacts(dir: string): Promise<ArtifactFile[]> {
   return out;
 }
 
-async function createSession(): Promise<SessionState> {
+async function createSession(agent: AgentKind): Promise<SessionState> {
   const id = randomUUID();
   const sessionDir = path.join(SESSIONS_ROOT, id);
   const artifactsDir = path.join(sessionDir, 'artifacts');
@@ -159,18 +199,10 @@ async function createSession(): Promise<SessionState> {
 
   const cols = 120;
   const rows = 32;
-  const claudeArgs = [
-    '--append-system-prompt', buildSystemPrompt(),
-    '--add-dir', artifactsDir,
-  ];
-  if (YOLO) {
-    // YOLO mode: claude was started with --yolo (or YOLO=1). Skip every
-    // permission prompt.
-    claudeArgs.push('--dangerously-skip-permissions');
-  }
+  const { bin, args } = agentCommand(agent, artifactsDir);
   const ptyProc = pty.spawn(
-    CLAUDE_BIN,
-    claudeArgs,
+    bin,
+    args,
     {
       name: 'xterm-256color',
       cols,
@@ -265,12 +297,13 @@ wss.on('connection', async (ws, req) => {
 
   const url = new URL(req.url ?? '/', 'http://localhost');
   const requestedId = url.searchParams.get('session');
+  const agent: AgentKind = url.searchParams.get('agent') === 'codex' ? 'codex' : 'claude';
 
   let state: SessionState | undefined =
     requestedId ? sessions.get(requestedId) : undefined;
   if (!state) {
     try {
-      state = await createSession();
+      state = await createSession(agent);
       sessions.set(state.id, state);
     } catch (err) {
       ws.send(
@@ -372,10 +405,30 @@ async function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-httpServer.listen(PORT, () => {
-  console.log(`[ticket.web] http://localhost:${PORT}`);
-  console.log(`[ticket.web] sessions: ${SESSIONS_ROOT}`);
-  console.log(`[ticket.web] project:  ${PROJECT_DIR}`);
-  console.log(`[ticket.web] claude:   ${CLAUDE_BIN}`);
-  console.log(`[ticket.web] mode:     ${YOLO ? '🐉 YOLO (--dangerously-skip-permissions)' : 'normal'}`);
+// Non-internal IPv4 addresses, so the URL printed at startup is reachable
+// from a phone / other device on the same LAN.
+function lanAddresses(): string[] {
+  const out: string[] = [];
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const i of ifaces ?? []) {
+      if (i.family === 'IPv4' && !i.internal) out.push(i.address);
+    }
+  }
+  return out;
+}
+
+httpServer.listen(PORT, HOST, () => {
+  const urls = [`http://localhost:${PORT}/`];
+  if (LAN) {
+    for (const ip of lanAddresses()) urls.push(`http://${ip}:${PORT}/`);
+  }
+  console.log('\n  terminal running at:');
+  for (const u of urls) console.log(`    ${u}`);
+  console.log('');
+  if (DEBUG) {
+    console.log(`[debug] sessions: ${SESSIONS_ROOT}`);
+    console.log(`[debug] project:  ${PROJECT_DIR}`);
+    console.log(`[debug] agents:   claude=${CLAUDE_BIN}, codex=${CODEX_BIN}`);
+    console.log(`[debug] mode:     ${YOLO ? 'YOLO' : 'normal'}, ${LAN ? 'LAN' : 'localhost-only'}`);
+  }
 });

@@ -37,11 +37,12 @@ button {
 button:hover { background: var(--bg-elev-2); }
 
 .app {
-  /* dvh accounts for the dynamic viewport — soft keyboard, mobile
-     browser toolbar — so the bottom row isn't clipped. Fallback to vh
-     for older browsers. */
+  /* useSoftKeyboard publishes the visual-viewport height as --app-height
+     so the layout shrinks to sit above the soft keyboard instead of
+     hiding behind it. Falls back to dvh, then vh for older browsers. */
   height: 100vh;
   height: 100dvh;
+  height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
 }
@@ -194,6 +195,61 @@ button:hover { background: var(--bg-elev-2); }
   background: transparent !important;
 }
 
+/* Agent picker modal ------------------------------------------------- */
+
+.agent-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.6);
+}
+.agent-modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  width: 100%;
+  max-width: 420px;
+}
+.agent-modal-title {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.agent-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev-2);
+  text-align: left;
+}
+.agent-option:hover {
+  border-color: var(--accent);
+  background: var(--bg-elev-2);
+}
+.agent-option-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.agent-option-desc {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
 /* (Narrow-viewport tweaks moved to end-of-file so source order wins
    over the base .artifacts-body rule that follows.) */
 
@@ -219,10 +275,29 @@ button:hover { background: var(--bg-elev-2); }
   font-size: 12px;
   color: var(--fg-dim);
 }
+.artifacts-collapse {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-dim);
+}
+.artifacts-collapse:hover {
+  color: var(--fg);
+  border-color: var(--accent-2);
+}
 .artifacts-body {
   display: grid;
   grid-template-columns: 220px 1fr;
   min-height: 0;
+}
+.artifacts.list-collapsed .artifacts-list {
+  display: none;
+}
+.artifacts.list-collapsed .artifacts-body {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
 }
 .artifacts-list {
   border-right: 1px solid var(--border);
@@ -495,4 +570,9 @@ button:hover { background: var(--bg-elev-2); }
 .kbd-btn:active {
   background: var(--accent-2);
   color: #000;
+}
+.kbd-btn.kbd-armed {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
 }
