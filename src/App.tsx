@@ -78,6 +78,21 @@ export function App() {
   const [counter, setCounter] = useState(initial.tabs.length + 1);
 
   const isNarrow = useMediaQuery('(max-width: 1023px)');
+
+  // PROJECT_DIR is process-wide on the server side, so a single fetch on
+  // mount is enough — it doesn't change per tab.
+  const [projectDir, setProjectDir] = useState<string | null>(null);
+  useEffect(() => {
+    let aborted = false;
+    fetch('/api/info')
+      .then((r) => r.json())
+      .then((d: { projectDir?: string }) => {
+        if (!aborted && typeof d.projectDir === 'string') setProjectDir(d.projectDir);
+      })
+      .catch(() => undefined);
+    return () => { aborted = true; };
+  }, []);
+
   const [view, setView] = useState<ViewMode>(() => {
     const saved = (localStorage.getItem(VIEW_KEY) as ViewMode | null) ?? 'split';
     return saved === 'split' || saved === 'term' || saved === 'artifacts' ? saved : 'split';
@@ -169,6 +184,7 @@ export function App() {
         view={view}
         onViewChange={setView}
         showSplit={!isNarrow}
+        projectDir={projectDir}
       />
       <div className="panels" style={{ position: 'relative' }}>
         {tabs

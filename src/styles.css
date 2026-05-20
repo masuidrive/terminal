@@ -69,6 +69,15 @@ button:hover { background: var(--bg-elev-2); }
 }
 .tabs-list::-webkit-scrollbar { height: 4px; }
 .tabs-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.tab-path {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  user-select: text;
+  padding: 0 4px;
+}
 .view-toggle {
   display: flex;
   gap: 2px;
@@ -486,9 +495,4 @@ button:hover { background: var(--bg-elev-2); }
 .kbd-btn:active {
   background: var(--accent-2);
   color: #000;
-}
-.kbd-btn.kbd-armed {
-  background: var(--accent);
-  color: #000;
-  border-color: var(--accent);
 }

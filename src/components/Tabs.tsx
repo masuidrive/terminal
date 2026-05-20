@@ -12,6 +12,17 @@ interface Props {
   onViewChange: (m: ViewMode) => void;
   /** If false, the Split button is hidden (narrow viewports). */
   showSplit: boolean;
+  /** Server PROJECT_DIR; shown next to the view toggle as a breadcrumb. */
+  projectDir: string | null;
+}
+
+// Show the full path when it's short. Once it's long, drop everything but
+// the trailing two path segments and prepend `…/`.
+function shortenPath(p: string): string {
+  if (p.length <= 28) return p;
+  const parts = p.split('/').filter(Boolean);
+  if (parts.length <= 2) return p;
+  return '…/' + parts.slice(-2).join('/');
 }
 
 export function Tabs({
@@ -23,6 +34,7 @@ export function Tabs({
   view,
   onViewChange,
   showSplit,
+  projectDir,
 }: Props) {
   return (
     <div className="tabs">
@@ -52,6 +64,11 @@ export function Tabs({
           +
         </button>
       </div>
+      {projectDir && (
+        <span className="tab-path" title={projectDir}>
+          {shortenPath(projectDir)}
+        </span>
+      )}
       <div className="view-toggle">
         <button
           className={'view-btn' + (view === 'term' ? ' active' : '')}

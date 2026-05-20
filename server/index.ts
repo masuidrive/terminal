@@ -57,6 +57,10 @@ app.get('/artifacts/:sid/*splat', async (req, res) => {
   res.sendFile(resolved);
 });
 
+app.get('/api/info', (_req, res) => {
+  res.json({ projectDir: PROJECT_DIR });
+});
+
 app.get('/api/sessions', (_req, res) => {
   res.json({
     sessions: [...sessions.keys()],
