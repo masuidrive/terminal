@@ -183,10 +183,16 @@ function send(target: SessionState | WebSocket, msg: ServerMessage) {
 }
 
 function appendRecent(state: SessionState, data: string) {
-  const combined = state.recent + data;
-  state.recent = combined.length > RECENT_BUFFER_BYTES
-    ? combined.slice(combined.length - RECENT_BUFFER_BYTES)
-    : combined;
+  let combined = state.recent + data;
+  if (combined.length > RECENT_BUFFER_BYTES) {
+    combined = combined.slice(combined.length - RECENT_BUFFER_BYTES);
+    // Resync to the start of a line: an escape sequence never spans '\n',
+    // so starting the buffer just after one guarantees a later replay
+    // never begins mid-sequence (which would garble the output).
+    const nl = combined.indexOf('\n');
+    if (nl !== -1) combined = combined.slice(nl + 1);
+  }
+  state.recent = combined;
   state.lastActivity = Date.now();
 }
 
@@ -310,8 +316,10 @@ async function attachWs(state: SessionState, ws: WebSocket) {
   send(state, { ch: 'hello', sessionId: state.id, artifactsDir: state.artifactsDir });
   if (state.recent) {
     // Replay the recent buffer so the client's xterm picks up the current
-    // PTY screen state without needing a redraw from claude.
-    send(state, { ch: 'pty', data: state.recent });
+    // PTY screen state. Clear the screen and scrollback first (CSI 3J
+    // erases xterm's scrollback) so a reconnect doesn't stack the
+    // replayed TUI redraw frames on top of stale buffer content.
+    send(state, { ch: 'pty', data: '\x1b[3J\x1b[2J\x1b[H' + state.recent });
   }
   send(state, { ch: 'artifacts-list', files: await listArtifacts(state.artifactsDir) });
 }
