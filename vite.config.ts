@@ -2,8 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // Vite dev server proxies WebSocket and artifact HTTP to the backend.
-// Backend listens on PORT (default 7681).
-const BACKEND_PORT = Number(process.env.SERVER_PORT ?? 7681);
+// Backend listens on PORT (default 4567).
+const BACKEND_PORT = Number(process.env.SERVER_PORT ?? 4567);
 
 export default defineConfig({
   plugins: [react()],

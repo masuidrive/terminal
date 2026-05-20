@@ -51,7 +51,7 @@ function writeStoredSession(tabId: string, sessionId: string | null) {
 
 function wsUrlForSession(sessionId: string | null, agent: AgentKind | null): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const backendPort = import.meta.env.VITE_BACKEND_PORT ?? '7681';
+  const backendPort = import.meta.env.VITE_BACKEND_PORT ?? '4567';
   // Talk to the backend directly in dev (bypass Vite's WS proxy, which
   // adds noticeable per-keystroke latency).
   const host = import.meta.env.DEV

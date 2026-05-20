@@ -23,7 +23,12 @@ import * as pty from 'node-pty';
 import type { ServerMessage, ClientMessage, ArtifactFile, AgentKind } from '../shared/protocol.ts';
 import { buildSystemPrompt } from './system-prompt.ts';
 
-const PORT = Number(process.env.SERVER_PORT ?? 7681);
+const BASE_PORT = Number(process.env.SERVER_PORT ?? 4567);
+// When the user did not pin a port (no --port, no SERVER_PORT), the bin
+// sets PORT_AUTO so a busy port rolls forward to the next free one. A
+// pinned port that is busy is a hard error instead.
+const PORT_AUTO = process.env.PORT_AUTO === '1';
+const MAX_PORT_TRIES = 20;
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
@@ -417,10 +422,48 @@ function lanAddresses(): string[] {
   return out;
 }
 
-httpServer.listen(PORT, HOST, () => {
-  const urls = [`http://localhost:${PORT}/`];
+// The error handler armed for the current listen attempt; cleared once a
+// bind succeeds so a later runtime error can't hit the retry/exit logic.
+let pendingListenError: ((err: NodeJS.ErrnoException) => void) | null = null;
+
+function startListening(port: number, triesLeft: number): void {
+  const onError = (err: NodeJS.ErrnoException) => {
+    pendingListenError = null;
+    if (err.code !== 'EADDRINUSE') {
+      console.error(err);
+      process.exit(1);
+    }
+    if (!PORT_AUTO) {
+      console.error(`\n  Port ${port} is already in use.\n`);
+      process.exit(1);
+    }
+    if (triesLeft <= 0) {
+      console.error(`\n  No free port found near ${BASE_PORT}.\n`);
+      process.exit(1);
+    }
+    startListening(port + 1, triesLeft - 1);
+  };
+  // A failed listen() emits EADDRINUSE on httpServer, but ws re-emits it on
+  // the WebSocketServer — so the catchable handler must live on wss.
+  pendingListenError = onError;
+  wss.once('error', onError);
+  // No success callback here: a callback passed to listen() is registered
+  // as a once('listening') handler that survives a failed attempt and
+  // would then also fire on the eventual successful bind. The single
+  // handler below is armed once instead.
+  httpServer.listen(port, HOST);
+}
+
+httpServer.once('listening', () => {
+  if (pendingListenError) {
+    wss.removeListener('error', pendingListenError);
+    pendingListenError = null;
+  }
+  const addr = httpServer.address();
+  const port = addr && typeof addr === 'object' ? addr.port : BASE_PORT;
+  const urls = [`http://localhost:${port}/`];
   if (LAN) {
-    for (const ip of lanAddresses()) urls.push(`http://${ip}:${PORT}/`);
+    for (const ip of lanAddresses()) urls.push(`http://${ip}:${port}/`);
   }
   console.log('\n  terminal running at:');
   for (const u of urls) console.log(`    ${u}`);
@@ -432,3 +475,5 @@ httpServer.listen(PORT, HOST, () => {
     console.log(`[debug] mode:     ${YOLO ? 'YOLO' : 'normal'}, ${LAN ? 'LAN' : 'localhost-only'}`);
   }
 });
+
+startListening(BASE_PORT, MAX_PORT_TRIES);

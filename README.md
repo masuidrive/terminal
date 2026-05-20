@@ -27,7 +27,7 @@ URL — open it in a browser:
 
 ```
   terminal running at:
-    http://localhost:7681/
+    http://localhost:4567/
 ```
 
 On first run `npx` clones the repo, installs dependencies (this compiles the
@@ -52,17 +52,22 @@ When a tab opens, a modal asks which agent to start — **Claude Code** or
 npx github:masuidrive/terminal --lan      # also reachable from other devices on the LAN
 npx github:masuidrive/terminal --yolo     # spawn the agent without permission prompts
 npx github:masuidrive/terminal --debug    # verbose logs + per-request access log
+npx github:masuidrive/terminal --port 8080  # pin a port (errors if it is busy)
 ```
 
 By default the server binds to `127.0.0.1` (localhost only). `--lan` binds all
 interfaces so you can open it from a phone on the same network — the URL list
 then includes the LAN / Tailscale addresses.
 
+The default port is `4567`; if it is busy the server rolls forward to the next
+free port. A port pinned with `--port` (or `SERVER_PORT`) is used as-is and
+fails fast if it is already in use.
+
 Environment variables:
 
 | Var           | Default         | Purpose                            |
 |---------------|-----------------|------------------------------------|
-| `SERVER_PORT` | `7681`          | HTTP + WebSocket port              |
+| `SERVER_PORT` | `4567`          | HTTP + WebSocket port              |
 | `CLAUDE_BIN`  | `claude`        | Path to the `claude` binary        |
 | `CODEX_BIN`   | `codex`         | Path to the `codex` binary         |
 | `PROJECT_DIR` | `process.cwd()` | Working directory passed to agents |
@@ -87,7 +92,7 @@ npm run dev -- --debug     # verbose backend logs
 ```
 
 Open <http://localhost:5172>. Vite proxies `/ws`, `/api` and `/artifacts` to
-the backend on `7681`; in dev the backend is always LAN-exposed.
+the backend on `4567`; in dev the backend is always LAN-exposed.
 
 ## How it works
 
