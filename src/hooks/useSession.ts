@@ -57,12 +57,15 @@ function wsUrlForSession(sessionId: string | null, agent: AgentKind | null): str
   const host = import.meta.env.DEV
     ? `${window.location.hostname}:${backendPort}`
     : window.location.host;
-  // Reattach to an existing session by id; otherwise spawn a new one with
-  // the chosen agent.
-  let qs = '';
-  if (sessionId) qs = `?session=${encodeURIComponent(sessionId)}`;
-  else if (agent) qs = `?agent=${encodeURIComponent(agent)}`;
-  return `${proto}://${host}/ws${qs}`;
+  // Reattach by session id when we have one. Always send the agent too:
+  // if the session is gone server-side (e.g. the server restarted) the
+  // replacement must be spawned with the tab's chosen agent, not the
+  // server default — otherwise a codex tab comes back as claude.
+  const params = new URLSearchParams();
+  if (sessionId) params.set('session', sessionId);
+  if (agent) params.set('agent', agent);
+  const qs = params.toString();
+  return `${proto}://${host}/ws${qs ? `?${qs}` : ''}`;
 }
 
 export function useSession(
