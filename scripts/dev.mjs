@@ -27,6 +27,7 @@ if (yolo) env.YOLO = '1';
 // it must be reachable from a phone on the same network.
 env.LAN = '1';
 if (argv.includes('--debug')) env.DEBUG = '1';
+if (argv.includes('-c') || argv.includes('--continue')) env.CONTINUE = '1';
 
 const child = spawn(
   'npx',

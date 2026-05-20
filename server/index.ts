@@ -34,6 +34,10 @@ const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const PROJECT_DIR = process.env.PROJECT_DIR ?? process.cwd();
 const YOLO = process.env.YOLO === '1';
 const DEBUG = process.env.DEBUG === '1';
+// `-c` / --continue: resume the previous conversation. Applies to the
+// first session of this server run only; new tabs after that start fresh.
+const CONTINUE = process.env.CONTINUE === '1';
+let continuePending = CONTINUE;
 // localhost-only by default; the `--lan` flag binds all interfaces so the
 // UI is reachable from a phone / other device on the same network.
 const LAN = process.env.LAN === '1';
@@ -60,16 +64,21 @@ if (hasBin(CODEX_BIN)) AVAILABLE_AGENTS.push('codex');
 // via --append-system-prompt, codex via `-c developer_instructions=`
 // (codex appends that to its model-visible prompt). claude additionally
 // gets --add-dir so it may write outside the project without prompting.
-function agentCommand(agent: AgentKind, artifactsDir: string): { bin: string; args: string[] } {
+function agentCommand(
+  agent: AgentKind,
+  artifactsDir: string,
+  cont: boolean,
+): { bin: string; args: string[] } {
   if (agent === 'codex') {
-    const args = ['-c', `developer_instructions=${buildSystemPrompt()}`];
+    const args: string[] = [];
+    if (cont) args.push('resume', '--last');
+    args.push('-c', `developer_instructions=${buildSystemPrompt()}`);
     if (YOLO) args.push('--dangerously-bypass-approvals-and-sandbox');
     return { bin: CODEX_BIN, args };
   }
-  const args = [
-    '--append-system-prompt', buildSystemPrompt(),
-    '--add-dir', artifactsDir,
-  ];
+  const args: string[] = [];
+  if (cont) args.push('--continue');
+  args.push('--append-system-prompt', buildSystemPrompt(), '--add-dir', artifactsDir);
   if (YOLO) args.push('--dangerously-skip-permissions');
   return { bin: CLAUDE_BIN, args };
 }
@@ -258,9 +267,11 @@ artifactsWatcher.on('unlink', (p) =>
 
 async function createSession(agent: AgentKind): Promise<SessionState> {
   const id = randomUUID();
+  const cont = continuePending;
+  continuePending = false;
   const cols = 120;
   const rows = 32;
-  const { bin, args } = agentCommand(agent, ARTIFACTS_DIR);
+  const { bin, args } = agentCommand(agent, ARTIFACTS_DIR, cont);
   const ptyProc = pty.spawn(
     bin,
     args,

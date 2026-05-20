@@ -6,6 +6,7 @@
 //
 // Usage:
 //   npx github:masuidrive/terminal           # localhost only, quiet
+//   npx github:masuidrive/terminal -c        # resume the previous conversation
 //   npx github:masuidrive/terminal --lan     # also reachable on the LAN
 //   npx github:masuidrive/terminal --yolo    # agent skips permission prompts
 //   npx github:masuidrive/terminal --debug   # verbose logs + access log
@@ -24,6 +25,7 @@ if (argv.includes('--yolo') || process.env.YOLO === '1') {
 }
 if (argv.includes('--lan')) process.env.LAN = '1';
 if (argv.includes('--debug')) process.env.DEBUG = '1';
+if (argv.includes('-c') || argv.includes('--continue')) process.env.CONTINUE = '1';
 
 // `--port N` pins a port (a busy one is then an error); with no port given
 // at all, PORT_AUTO lets the server roll forward past a busy default.

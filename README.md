@@ -49,11 +49,16 @@ one of them is installed, it starts directly without asking.
 ## Options
 
 ```bash
+npx github:masuidrive/terminal -c         # resume the previous conversation (first tab)
 npx github:masuidrive/terminal --lan      # also reachable from other devices on the LAN
 npx github:masuidrive/terminal --yolo     # spawn the agent without permission prompts
 npx github:masuidrive/terminal --debug    # verbose logs + per-request access log
 npx github:masuidrive/terminal --port 8080  # pin a port (errors if it is busy)
 ```
+
+`-c` (or `--continue`) resumes the most recent conversation — `claude
+--continue` / `codex resume --last` — for the first session only; tabs you
+open afterwards start fresh.
 
 By default the server binds to `127.0.0.1` (localhost only). `--lan` binds all
 interfaces so you can open it from a phone on the same network — the URL list
