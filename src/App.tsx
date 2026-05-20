@@ -107,6 +107,17 @@ export function App() {
     return () => { aborted = true; };
   }, []);
 
+  // Guard against losing the running session to an accidental back-swipe
+  // or tab close — the browser shows its native "leave site?" prompt.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   const [view, setView] = useState<ViewMode>(() => {
     const saved = (localStorage.getItem(VIEW_KEY) as ViewMode | null) ?? 'split';
     return saved === 'split' || saved === 'term' || saved === 'artifacts' ? saved : 'split';
