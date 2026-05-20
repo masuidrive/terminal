@@ -10,14 +10,14 @@
 // socket is terminated. The next client connect reattaches.
 
 import { createServer } from 'node:http';
-import { mkdir, stat, readdir, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { stat, readdir } from 'node:fs/promises';
+import { existsSync, mkdirSync, accessSync, constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
-import chokidar, { type FSWatcher } from 'chokidar';
+import chokidar from 'chokidar';
 import * as pty from 'node-pty';
 
 import type { ServerMessage, ClientMessage, ArtifactFile, AgentKind } from '../shared/protocol.ts';
@@ -39,6 +39,23 @@ const DEBUG = process.env.DEBUG === '1';
 const LAN = process.env.LAN === '1';
 const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
 
+// Whether an executable is resolvable — either an absolute path or a bare
+// name found on PATH. Used to decide which agents the picker offers.
+function hasBin(bin: string): boolean {
+  if (bin.includes(path.sep)) {
+    try { accessSync(bin, fsConstants.X_OK); return true; } catch { return false; }
+  }
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    try { accessSync(path.join(dir, bin), fsConstants.X_OK); return true; } catch { /* next */ }
+  }
+  return false;
+}
+
+const AVAILABLE_AGENTS: AgentKind[] = [];
+if (hasBin(CLAUDE_BIN)) AVAILABLE_AGENTS.push('claude');
+if (hasBin(CODEX_BIN)) AVAILABLE_AGENTS.push('codex');
+
 // Binary + argv for a given agent. Claude gets the artifacts system prompt
 // and --add-dir; codex is spawned plain (it has no equivalent flags), so
 // the artifacts panel only auto-populates for claude sessions.
@@ -55,7 +72,9 @@ function agentCommand(agent: AgentKind, artifactsDir: string): { bin: string; ar
   if (YOLO) args.push('--dangerously-skip-permissions');
   return { bin: CLAUDE_BIN, args };
 }
-const SESSIONS_ROOT = path.join(os.tmpdir(), 'ticket-web', 'sessions');
+// One artifacts directory shared by every session, so claude in one tab
+// and codex in another (and successive sessions) all see the same files.
+const ARTIFACTS_DIR = path.join(os.tmpdir(), 'ticket-web', 'artifacts');
 const RECENT_BUFFER_BYTES = 256 * 1024;
 const HEARTBEAT_MS = 30 * 1000;
 // Sessions live until either the server shuts down, the client explicitly
@@ -72,11 +91,12 @@ if (DEBUG) {
   });
 }
 
+// The :sid segment is vestigial — artifacts are shared, not per-session —
+// but kept so existing client URLs (/artifacts/<sid>/<path>) still resolve.
 app.get('/artifacts/:sid/*splat', async (req, res) => {
-  const sid = req.params.sid;
   const splat = (req.params as Record<string, string | string[]>).splat;
   const rel = Array.isArray(splat) ? splat.join('/') : (splat ?? '');
-  const base = path.join(SESSIONS_ROOT, sid, 'artifacts');
+  const base = ARTIFACTS_DIR;
   const resolved = path.resolve(base, rel);
   if (!resolved.startsWith(base + path.sep) && resolved !== base) {
     res.status(403).end('forbidden');
@@ -94,7 +114,7 @@ app.get('/artifacts/:sid/*splat', async (req, res) => {
 });
 
 app.get('/api/info', (_req, res) => {
-  res.json({ projectDir: PROJECT_DIR });
+  res.json({ projectDir: PROJECT_DIR, agents: AVAILABLE_AGENTS });
 });
 
 app.get('/api/sessions', (_req, res) => {
@@ -114,13 +134,10 @@ app.delete('/api/sessions/:id', async (req, res) => {
   const state = sessions.get(req.params.id);
   if (state) {
     try { state.ptyProc.kill(); } catch { /* ignore */ }
-    await state.watcher.close().catch(() => undefined);
     if (state.ws && state.ws.readyState === state.ws.OPEN) {
       try { state.ws.close(4001, 'session destroyed'); } catch { /* ignore */ }
     }
     sessions.delete(state.id);
-    await rm(path.join(SESSIONS_ROOT, state.id), { recursive: true, force: true })
-      .catch(() => undefined);
   }
   res.status(204).end();
 });
@@ -145,7 +162,6 @@ interface SessionState {
   id: string;
   artifactsDir: string;
   ptyProc: pty.IPty;
-  watcher: FSWatcher;
   ws: WebSocket | null;
   /** Recent PTY output, capped to RECENT_BUFFER_BYTES, used to repaint
    *  xterm scrollback when a client reattaches. */
@@ -196,15 +212,48 @@ async function listArtifacts(dir: string): Promise<ArtifactFile[]> {
   return out;
 }
 
+// One watcher on the shared artifacts directory, broadcasting changes to
+// every connected session.
+mkdirSync(ARTIFACTS_DIR, { recursive: true });
+
+function broadcast(msg: ServerMessage) {
+  for (const s of sessions.values()) send(s, msg);
+}
+
+const artifactsWatcher = chokidar.watch(ARTIFACTS_DIR, {
+  ignoreInitial: true,
+  awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
+});
+
+async function emitArtifact(event: 'add' | 'change', full: string) {
+  try {
+    const st = await stat(full);
+    if (!st.isFile()) return;
+    broadcast({
+      ch: 'artifacts',
+      event,
+      file: {
+        path: path.relative(ARTIFACTS_DIR, full),
+        size: st.size,
+        mtime: st.mtimeMs,
+        ext: path.extname(full).slice(1).toLowerCase(),
+      },
+    });
+  } catch {
+    // raced with delete
+  }
+}
+artifactsWatcher.on('add', (p) => emitArtifact('add', p));
+artifactsWatcher.on('change', (p) => emitArtifact('change', p));
+artifactsWatcher.on('unlink', (p) =>
+  broadcast({ ch: 'artifacts', event: 'unlink', path: path.relative(ARTIFACTS_DIR, p) })
+);
+
 async function createSession(agent: AgentKind): Promise<SessionState> {
   const id = randomUUID();
-  const sessionDir = path.join(SESSIONS_ROOT, id);
-  const artifactsDir = path.join(sessionDir, 'artifacts');
-  await mkdir(artifactsDir, { recursive: true });
-
   const cols = 120;
   const rows = 32;
-  const { bin, args } = agentCommand(agent, artifactsDir);
+  const { bin, args } = agentCommand(agent, ARTIFACTS_DIR);
   const ptyProc = pty.spawn(
     bin,
     args,
@@ -215,7 +264,7 @@ async function createSession(agent: AgentKind): Promise<SessionState> {
       cwd: PROJECT_DIR,
       env: {
         ...process.env,
-        CLAUDE_ARTIFACTS_DIR: artifactsDir,
+        CLAUDE_ARTIFACTS_DIR: ARTIFACTS_DIR,
         TERM: 'xterm-256color',
         FORCE_COLOR: '1',
       } as Record<string, string>,
@@ -224,9 +273,8 @@ async function createSession(agent: AgentKind): Promise<SessionState> {
 
   const state: SessionState = {
     id,
-    artifactsDir,
+    artifactsDir: ARTIFACTS_DIR,
     ptyProc,
-    watcher: null as unknown as FSWatcher, // assigned below
     ws: null,
     recent: '',
     lastActivity: Date.now(),
@@ -240,36 +288,8 @@ async function createSession(agent: AgentKind): Promise<SessionState> {
   });
   ptyProc.onExit(({ exitCode, signal }) => {
     send(state, { ch: 'pty-exit', code: exitCode, signal: signal ?? null });
-    state.watcher?.close().catch(() => undefined);
     sessions.delete(state.id);
   });
-
-  const watcher = chokidar.watch(artifactsDir, {
-    ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
-  });
-  state.watcher = watcher;
-
-  async function emitFile(event: 'add' | 'change', full: string) {
-    try {
-      const st = await stat(full);
-      if (!st.isFile()) return;
-      const file: ArtifactFile = {
-        path: path.relative(artifactsDir, full),
-        size: st.size,
-        mtime: st.mtimeMs,
-        ext: path.extname(full).slice(1).toLowerCase(),
-      };
-      send(state, { ch: 'artifacts', event, file });
-    } catch {
-      // raced with delete
-    }
-  }
-  watcher.on('add', (p) => emitFile('add', p));
-  watcher.on('change', (p) => emitFile('change', p));
-  watcher.on('unlink', (p) =>
-    send(state, { ch: 'artifacts', event: 'unlink', path: path.relative(artifactsDir, p) })
-  );
 
   return state;
 }
@@ -371,40 +391,20 @@ wss.on('connection', async (ws, req) => {
 
   ws.on('close', () => {
     clearInterval(hb);
-    // Detach only — keep PTY and watcher alive for reattach.
+    // Detach only — keep the PTY alive for reattach.
     if (state && state.ws === ws) {
       state.ws = null;
     }
   });
 });
 
-// Stale on-disk session dirs from prior crashes — anything > 24h old and
-// not in our live map. The live sessions themselves have no idle timeout.
-setInterval(async () => {
-  try {
-    const entries = await readdir(SESSIONS_ROOT).catch(() => [] as string[]);
-    const live = new Set(sessions.keys());
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    for (const id of entries) {
-      if (live.has(id)) continue;
-      const dir = path.join(SESSIONS_ROOT, id);
-      const st = await stat(dir).catch(() => null);
-      if (st && st.mtimeMs < cutoff) {
-        await rm(dir, { recursive: true, force: true });
-      }
-    }
-  } catch {
-    /* best effort */
-  }
-}, 60 * 60 * 1000).unref();
-
 // When the server shuts down (SIGINT / SIGTERM), tear down every live
 // session so claude doesn't leak as an orphan process group.
 async function shutdown() {
   for (const state of sessions.values()) {
     try { state.ptyProc.kill(); } catch { /* ignore */ }
-    state.watcher.close().catch(() => undefined);
   }
+  artifactsWatcher.close().catch(() => undefined);
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
@@ -468,11 +468,14 @@ httpServer.once('listening', () => {
   console.log('\n  terminal running at:');
   for (const u of urls) console.log(`    ${u}`);
   console.log('');
+  if (AVAILABLE_AGENTS.length === 0) {
+    console.error('  Warning: neither claude nor codex was found on PATH.\n');
+  }
   if (DEBUG) {
-    console.log(`[debug] sessions: ${SESSIONS_ROOT}`);
-    console.log(`[debug] project:  ${PROJECT_DIR}`);
-    console.log(`[debug] agents:   claude=${CLAUDE_BIN}, codex=${CODEX_BIN}`);
-    console.log(`[debug] mode:     ${YOLO ? 'YOLO' : 'normal'}, ${LAN ? 'LAN' : 'localhost-only'}`);
+    console.log(`[debug] artifacts: ${ARTIFACTS_DIR}`);
+    console.log(`[debug] project:   ${PROJECT_DIR}`);
+    console.log(`[debug] agents:    [${AVAILABLE_AGENTS.join(', ')}] (claude=${CLAUDE_BIN}, codex=${CODEX_BIN})`);
+    console.log(`[debug] mode:      ${YOLO ? 'YOLO' : 'normal'}, ${LAN ? 'LAN' : 'localhost-only'}`);
   }
 });
 

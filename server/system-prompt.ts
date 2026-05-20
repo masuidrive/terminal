@@ -3,9 +3,15 @@
 export const ARTIFACTS_SYSTEM_PROMPT = `
 ## Artifacts directory
 
-You have a dedicated artifacts directory at the path stored in the environment
-variable \`CLAUDE_ARTIFACTS_DIR\`. The user's web UI watches this directory and
-renders any file written here in a side panel next to the terminal.
+The environment variable \`CLAUDE_ARTIFACTS_DIR\` holds the path to an artifacts
+directory. The user's web UI watches it and renders any file written here in a
+side panel next to the terminal.
+
+**This directory is shared by every session and tab.** claude and codex running
+in different tabs all read and write the same directory, so files from another
+agent or an earlier session may already be present, and anything you write here
+is visible to all of them. Use descriptive, specific filenames to avoid
+clobbering another session's work.
 
 ### When to write an artifact
 

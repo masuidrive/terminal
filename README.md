@@ -34,8 +34,8 @@ On first run `npx` clones the repo, installs dependencies (this compiles the
 `node-pty` native module) and builds the client, so it takes a minute. Later
 runs are cached and start instantly.
 
-When a tab opens, a modal asks which agent to start — **Claude Code** or
-**Codex**.
+When a tab opens you pick the agent — **Claude Code** or **Codex**. If only
+one of them is installed, it starts directly without asking.
 
 ## Requirements
 
@@ -79,8 +79,10 @@ The artifacts pane renders files the agent writes to `$CLAUDE_ARTIFACTS_DIR`:
 - Markdown (GFM + ```mermaid blocks), HTML (sandboxed iframe), SVG / images
 - Mermaid diagrams, JSON / CSV tables, syntax-highlighted code
 
-Claude Code is told about the directory via `--append-system-prompt`. Codex
-is spawned plain, so artifacts only auto-populate for Claude sessions.
+The directory is **shared by every session and tab** — claude in one tab and
+codex in another see the same files. Claude Code is told about it via
+`--append-system-prompt`; Codex is spawned plain, so it only writes there if
+you ask it to.
 
 ## Development
 
@@ -100,8 +102,9 @@ the backend on `4567`; in dev the backend is always LAN-exposed.
   `claude` or `codex` in a PTY. Sessions outlive the socket — a dropped
   connection reattaches to the same PTY (with a connection-timeout guard and
   reconnect-on-wake so a slept phone recovers without a reload).
-- **Artifacts are files on disk.** chokidar watches `$CLAUDE_ARTIFACTS_DIR`
-  and streams add / change / unlink events to the client.
+- **Artifacts are files on disk.** chokidar watches one shared
+  `$CLAUDE_ARTIFACTS_DIR` and broadcasts add / change / unlink events to
+  every connected session.
 - **HTML artifacts** render in an iframe sandboxed with `allow-scripts` only
   (no `allow-same-origin`), so a generated page can't reach the app's origin.
 - **Production is one process.** `prepare` builds the client; the server

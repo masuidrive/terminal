@@ -86,17 +86,24 @@ export function App() {
   // is actually up — a keyboard being open already implies a touch device.
   const keyboardOpen = useSoftKeyboard();
 
-  // PROJECT_DIR is process-wide on the server side, so a single fetch on
-  // mount is enough — it doesn't change per tab.
+  // PROJECT_DIR and the installed agents are process-wide on the server, so
+  // a single fetch on mount is enough. `availableAgents` stays null until
+  // the fetch resolves so the agent picker doesn't flash the wrong state.
   const [projectDir, setProjectDir] = useState<string | null>(null);
+  const [availableAgents, setAvailableAgents] = useState<AgentKind[] | null>(null);
   useEffect(() => {
     let aborted = false;
     fetch('/api/info')
       .then((r) => r.json())
-      .then((d: { projectDir?: string }) => {
-        if (!aborted && typeof d.projectDir === 'string') setProjectDir(d.projectDir);
+      .then((d: { projectDir?: string; agents?: AgentKind[] }) => {
+        if (aborted) return;
+        if (typeof d.projectDir === 'string') setProjectDir(d.projectDir);
+        setAvailableAgents(Array.isArray(d.agents) ? d.agents : ['claude', 'codex']);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        // /api/info unreachable — fall back to offering both in the modal.
+        if (!aborted) setAvailableAgents(['claude', 'codex']);
+      });
     return () => { aborted = true; };
   }, []);
 
@@ -214,6 +221,7 @@ export function App() {
               view={view}
               keyboardOpen={keyboardOpen}
               agent={t.agent ?? null}
+              availableAgents={availableAgents}
               onChooseAgent={(a) => handleChooseAgent(t.id, a)}
             />
           ))}
@@ -232,6 +240,7 @@ function TabPanel({
   view,
   keyboardOpen,
   agent,
+  availableAgents,
   onChooseAgent,
 }: {
   tabId: string;
@@ -239,15 +248,24 @@ function TabPanel({
   view: ViewMode;
   keyboardOpen: boolean;
   agent: AgentKind | null;
+  availableAgents: AgentKind[] | null;
   onChooseAgent: (agent: AgentKind) => void;
 }) {
   const session = useSession(tabId, true, agent);
-  // A fresh tab with no agent and no server session yet needs the user to
-  // pick an agent before anything connects.
-  const showAgentModal = agent == null && session.sessionId == null;
+  // A fresh tab with no agent and no server session yet needs one chosen.
+  const needsAgent = agent == null && session.sessionId == null;
+  // With exactly one agent installed, skip the modal and pick it directly.
+  useEffect(() => {
+    if (needsAgent && availableAgents != null && availableAgents.length === 1) {
+      onChooseAgent(availableAgents[0]!);
+    }
+  }, [needsAgent, availableAgents, onChooseAgent]);
+  // Modal when the choice is real (2 agents) or there's nothing to run (0).
+  const showAgentModal =
+    needsAgent && availableAgents != null && availableAgents.length !== 1;
   // Surface WS state so debugging "blank screen" cases doesn't need
   // DevTools — a banner appears when we're disconnected.
-  const showStatus = !showAgentModal && !session.connected;
+  const showStatus = !needsAgent && !session.connected;
   const termPanelRef = useRef<ImperativePanelHandle>(null);
   const artPanelRef = useRef<ImperativePanelHandle>(null);
 
@@ -322,7 +340,9 @@ function TabPanel({
         </PanelGroup>
       </div>
       {showToolbar && <KeyboardToolbar session={session} />}
-      {showAgentModal && <AgentModal onPick={onChooseAgent} />}
+      {showAgentModal && (
+        <AgentModal agents={availableAgents ?? []} onPick={onChooseAgent} />
+      )}
     </div>
   );
 }
