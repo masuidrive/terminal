@@ -1,0 +1,13 @@
+# Mirrors .gitignore EXCEPT dist/ — the `prepare` script builds dist/ and
+# the server serves it at runtime, so it must be in the published package.
+# Without this file npm falls back to .gitignore, which excludes dist/.
+node_modules/
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.local
+.vite/
+sessions/
+tmp/
+.claude/
