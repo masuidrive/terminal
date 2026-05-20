@@ -80,9 +80,8 @@ The artifacts pane renders files the agent writes to `$CLAUDE_ARTIFACTS_DIR`:
 - Mermaid diagrams, JSON / CSV tables, syntax-highlighted code
 
 The directory is **shared by every session and tab** — claude in one tab and
-codex in another see the same files. Claude Code is told about it via
-`--append-system-prompt`; Codex is spawned plain, so it only writes there if
-you ask it to.
+codex in another see the same files. Both agents are briefed about it: Claude
+Code via `--append-system-prompt`, Codex via `-c developer_instructions=`.
 
 ## Development
 

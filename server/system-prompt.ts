@@ -1,4 +1,5 @@
-// Pieces appended to Claude Code's system prompt via `--append-system-prompt`.
+// Artifacts brief appended to the agent's instructions — via
+// `--append-system-prompt` for claude, `-c developer_instructions=` for codex.
 
 export const ARTIFACTS_SYSTEM_PROMPT = `
 ## Artifacts directory
@@ -30,7 +31,7 @@ alongside the conversation, instead of only as terminal text:
 ### What NOT to put here
 
 - Files that belong in the user's project — write those to the working directory
-  via Edit/Write as usual.
+  with your normal editing tools.
 - Throwaway scratch only needed for one tool call — pipe it through Bash.
 - Verbose logs — keep them in terminal output.
 
@@ -56,7 +57,7 @@ cat > "$CLAUDE_ARTIFACTS_DIR/plan.md" <<'EOF'
 EOF
 \`\`\`
 
-Or use the Write tool with an absolute path built from \`$CLAUDE_ARTIFACTS_DIR\`.
+Or write the file directly to an absolute path built from \`$CLAUDE_ARTIFACTS_DIR\`.
 `.trim();
 
 export function buildSystemPrompt(): string {

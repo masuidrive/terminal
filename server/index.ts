@@ -56,12 +56,13 @@ const AVAILABLE_AGENTS: AgentKind[] = [];
 if (hasBin(CLAUDE_BIN)) AVAILABLE_AGENTS.push('claude');
 if (hasBin(CODEX_BIN)) AVAILABLE_AGENTS.push('codex');
 
-// Binary + argv for a given agent. Claude gets the artifacts system prompt
-// and --add-dir; codex is spawned plain (it has no equivalent flags), so
-// the artifacts panel only auto-populates for claude sessions.
+// Binary + argv for a given agent. Both get the artifacts brief: claude
+// via --append-system-prompt, codex via `-c developer_instructions=`
+// (codex appends that to its model-visible prompt). claude additionally
+// gets --add-dir so it may write outside the project without prompting.
 function agentCommand(agent: AgentKind, artifactsDir: string): { bin: string; args: string[] } {
   if (agent === 'codex') {
-    const args: string[] = [];
+    const args = ['-c', `developer_instructions=${buildSystemPrompt()}`];
     if (YOLO) args.push('--dangerously-bypass-approvals-and-sandbox');
     return { bin: CODEX_BIN, args };
   }
