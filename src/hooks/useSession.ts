@@ -72,8 +72,13 @@ export function useSession(
   tabId: string,
   active: boolean,
   agent: AgentKind | null,
+  onExit: () => void,
 ): SessionApi {
   const wsRef = useRef<WebSocket | null>(null);
+  // Kept in a ref so the stable ws.onmessage closure always sees the
+  // latest callback without re-running the connection effect.
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
   /** Queue of stringified messages pending an OPEN socket. Drained on
    *  ws.onopen so that early sends (initial resize fired during xterm
    *  layout) never get silently dropped. */
@@ -201,11 +206,10 @@ export function useSession(
             }
             break;
           case 'pty-exit':
-            setConnected(false);
-            // Drop the persisted session — it's gone server-side. A fresh
-            // connect will spin up a new one.
+            // The agent process is gone — drop the persisted session and
+            // close the tab instead of respawning.
             writeStoredSession(tabId, null);
-            setSessionId(null);
+            onExitRef.current();
             break;
           case 'error':
             console.error('[server]', msg.message);

@@ -234,6 +234,7 @@ export function App() {
               agent={t.agent ?? null}
               availableAgents={availableAgents}
               onChooseAgent={(a) => handleChooseAgent(t.id, a)}
+              onExit={() => handleClose(t.id)}
             />
           ))}
       </div>
@@ -253,6 +254,7 @@ function TabPanel({
   agent,
   availableAgents,
   onChooseAgent,
+  onExit,
 }: {
   tabId: string;
   active: boolean;
@@ -261,8 +263,9 @@ function TabPanel({
   agent: AgentKind | null;
   availableAgents: AgentKind[] | null;
   onChooseAgent: (agent: AgentKind) => void;
+  onExit: () => void;
 }) {
-  const session = useSession(tabId, true, agent);
+  const session = useSession(tabId, true, agent, onExit);
   // A fresh tab with no agent and no server session yet needs one chosen.
   const needsAgent = agent == null && session.sessionId == null;
   // With exactly one agent installed, skip the modal and pick it directly.
