@@ -7,10 +7,13 @@
 
 import type { IBufferLine, ILink, Terminal } from '@xterm/xterm';
 
-// URL body: anything that isn't whitespace, a quote, or a bracket/pipe/etc.
-const URL_EXCLUDE = '\\s"\'`<>(){}\\[\\]|\\\\^';
-const URL_RE = new RegExp(`https?://[^${URL_EXCLUDE}]+`, 'gi');
-const URL_CHAR = new RegExp(`[^${URL_EXCLUDE}]`);
+// URL body: the ASCII characters legal in a URL, minus the brackets and
+// quotes that usually wrap a URL rather than belong to it. Restricting to
+// ASCII also makes a URL stop cleanly when CJK text follows it with no
+// separating space — common in Japanese — instead of swallowing it.
+const URL_CHARS = 'A-Za-z0-9!#$%&*+,./:;=?@_~\\-';
+const URL_RE = new RegExp(`https?://[${URL_CHARS}]+`, 'gi');
+const URL_CHAR = new RegExp(`[${URL_CHARS}]`);
 const MAX_BLOCK_ROWS = 40;
 
 export function registerWrappedLinkProvider(term: Terminal): void {
@@ -22,19 +25,28 @@ export function registerWrappedLinkProvider(term: Terminal): void {
 }
 
 // Whether `below` continues `above` for URL reassembly: a terminal-wrapped
-// row, or `above` ran (almost) to the right edge with URL-valid characters
-// on both sides of the break.
-function continues(above: IBufferLine, below: IBufferLine, cols: number): boolean {
+// row, or a row an agent's renderer broke mid-URL with an explicit
+// newline. We can't recover the renderer's intent, so any explicit break
+// counts as a continuation when both sides of the seam are URL characters.
+// This also stitches plain wrapped prose, which is harmless: URL_RE only
+// yields a link when a scheme is present, and a non-URL char (space, CJK,
+// quote) on either side stops the run. Earlier code additionally required
+// `above` to reach the right edge — that dropped URLs whose renderer
+// wrapped them at `&`/`/` delimiters or within a margin, leaving the line
+// short of `cols`.
+function continues(above: IBufferLine, below: IBufferLine): boolean {
   if (below.isWrapped) return true;
   const a = above.translateToString(true);
   const b = below.translateToString(true);
-  if (a.length < cols - 4 || !a.length || !b.length) return false;
+  if (!a.length || !b.length) return false;
+  // A fresh list / ordered-list item is a new logical line, not a URL
+  // that happens to resume with a URL-valid character.
+  if (/^\s*([-*+]|\d+[.)])\s/.test(b)) return false;
   return URL_CHAR.test(a[a.length - 1]!) && URL_CHAR.test(b[0]!);
 }
 
 function computeLinks(term: Terminal, lineNumber: number): ILink[] | undefined {
   const buf = term.buffer.active;
-  const cols = term.cols;
   const y0 = lineNumber - 1;
   if (!buf.getLine(y0)) return undefined;
 
@@ -43,7 +55,7 @@ function computeLinks(term: Terminal, lineNumber: number): ILink[] | undefined {
   while (start > 0) {
     const prev = buf.getLine(start - 1);
     const cur = buf.getLine(start);
-    if (!prev || !cur || !continues(prev, cur, cols)) break;
+    if (!prev || !cur || !continues(prev, cur)) break;
     start--;
     if (y0 - start > MAX_BLOCK_ROWS) break;
   }
@@ -53,7 +65,7 @@ function computeLinks(term: Terminal, lineNumber: number): ILink[] | undefined {
     if (!cur) break;
     rows.push({ y: r, text: cur.translateToString(true) });
     const next = buf.getLine(r + 1);
-    if (!next || !continues(cur, next, cols)) break;
+    if (!next || !continues(cur, next)) break;
     if (r - start > MAX_BLOCK_ROWS) break;
   }
 
