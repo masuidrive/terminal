@@ -28,6 +28,8 @@ if (yolo) env.YOLO = '1';
 env.LAN = '1';
 if (argv.includes('--debug')) env.DEBUG = '1';
 if (argv.includes('-c') || argv.includes('--continue')) env.CONTINUE = '1';
+const agentArg = argv.find((a) => a === 'claude' || a === 'codex');
+if (agentArg) env.INITIAL_AGENT = agentArg;
 
 const child = spawn(
   'npx',

@@ -35,7 +35,9 @@ On first run `npx` clones the repo, installs dependencies (this compiles the
 runs are cached and start instantly.
 
 When a tab opens you pick the agent — **Claude Code** or **Codex**. If only
-one of them is installed, it starts directly without asking.
+one of them is installed, it starts directly without asking. Naming an agent
+on the command line (`npx github:masuidrive/terminal codex`) skips the picker
+for the first window.
 
 ## Requirements
 
@@ -49,15 +51,21 @@ one of them is installed, it starts directly without asking.
 ## Options
 
 ```bash
-npx github:masuidrive/terminal -c         # resume the previous conversation (first tab)
+npx github:masuidrive/terminal codex      # first window = codex, skip the picker
+npx github:masuidrive/terminal codex -c   # ...resuming the previous conversation
+npx github:masuidrive/terminal -c         # resume the previous conversation (first window)
 npx github:masuidrive/terminal --lan      # also reachable from other devices on the LAN
 npx github:masuidrive/terminal --yolo     # spawn the agent without permission prompts
 npx github:masuidrive/terminal --debug    # verbose logs + per-request access log
 npx github:masuidrive/terminal --port 8080  # pin a port (errors if it is busy)
+npx github:masuidrive/terminal --help     # full option list
 ```
 
+A positional `claude` or `codex` sets the first window's agent and skips the
+picker modal for it; later tabs still show the picker.
+
 `-c` (or `--continue`) resumes the most recent conversation — `claude
---continue` / `codex resume --last` — for the first session only; tabs you
+--continue` / `codex resume --last` — for the first window only; tabs you
 open afterwards start fresh.
 
 By default the server binds to `127.0.0.1` (localhost only). `--lan` binds all

@@ -6,7 +6,8 @@
 //
 // Usage:
 //   npx github:masuidrive/terminal           # localhost only, quiet
-//   npx github:masuidrive/terminal -c        # resume the previous conversation
+//   npx github:masuidrive/terminal codex     # first window = codex (skip picker)
+//   npx github:masuidrive/terminal codex -c  # ...resuming the previous conversation
 //   npx github:masuidrive/terminal --lan     # also reachable on the LAN
 //   npx github:masuidrive/terminal --yolo    # agent skips permission prompts
 //   npx github:masuidrive/terminal --debug   # verbose logs + access log
@@ -17,6 +18,33 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { register } from 'tsx/esm/api';
 
 const argv = process.argv.slice(2);
+
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log(`terminal — run Claude Code or Codex in your browser
+
+Usage:
+  npx github:masuidrive/terminal [claude|codex] [options]
+
+Arguments:
+  claude | codex   Agent for the first window (skips the picker modal)
+
+Options:
+  -c, --continue   Resume the previous conversation (first window only)
+  --lan            Also serve on the local network (default: localhost only)
+  --yolo           Spawn the agent without permission prompts
+  --debug          Verbose logs + per-request access log
+  --port <n>       Pin a port; fails if busy (default 4567, else auto-increments)
+  -h, --help       Show this help
+
+Environment:
+  SERVER_PORT  CLAUDE_BIN  CODEX_BIN  PROJECT_DIR`);
+  process.exit(0);
+}
+
+// Positional agent: the first window uses it, skipping the picker modal.
+const agentArg = argv.find((a) => a === 'claude' || a === 'codex');
+if (agentArg) process.env.INITIAL_AGENT = agentArg;
+
 if (argv.includes('--yolo') || process.env.YOLO === '1') {
   process.env.YOLO = '1';
   console.log(

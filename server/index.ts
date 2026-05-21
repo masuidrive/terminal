@@ -60,6 +60,16 @@ const AVAILABLE_AGENTS: AgentKind[] = [];
 if (hasBin(CLAUDE_BIN)) AVAILABLE_AGENTS.push('claude');
 if (hasBin(CODEX_BIN)) AVAILABLE_AGENTS.push('codex');
 
+// Agent for the first window, set by the `terminal claude|codex` positional.
+// The client uses it to skip the picker for that one window. Ignored if the
+// named agent isn't actually installed.
+const initialAgentEnv = process.env.INITIAL_AGENT;
+const INITIAL_AGENT: AgentKind | null =
+  (initialAgentEnv === 'claude' || initialAgentEnv === 'codex') &&
+  AVAILABLE_AGENTS.includes(initialAgentEnv)
+    ? initialAgentEnv
+    : null;
+
 // Binary + argv for a given agent. Both get the artifacts brief: claude
 // via --append-system-prompt, codex via `-c developer_instructions=`
 // (codex appends that to its model-visible prompt). claude additionally
@@ -124,7 +134,11 @@ app.get('/artifacts/:sid/*splat', async (req, res) => {
 });
 
 app.get('/api/info', (_req, res) => {
-  res.json({ projectDir: PROJECT_DIR, agents: AVAILABLE_AGENTS });
+  res.json({
+    projectDir: PROJECT_DIR,
+    agents: AVAILABLE_AGENTS,
+    initialAgent: INITIAL_AGENT,
+  });
 });
 
 app.get('/api/sessions', (_req, res) => {
@@ -487,6 +501,8 @@ httpServer.once('listening', () => {
   }
   console.log('\n  terminal running at:');
   for (const u of urls) console.log(`    ${u}`);
+  console.log('');
+  console.log('  options:  [claude|codex]  -c  --lan  --yolo  --debug  --port <n>  --help');
   console.log('');
   if (AVAILABLE_AGENTS.length === 0) {
     console.error('  Warning: neither claude nor codex was found on PATH.\n');

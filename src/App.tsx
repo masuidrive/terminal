@@ -54,7 +54,7 @@ function newTab(idx: number): TabState {
   return { id: uuid(), title: `session ${idx}` };
 }
 
-function loadTabs(): { tabs: TabState[]; activeId: string } {
+function loadTabs(): { tabs: TabState[]; activeId: string; fresh: boolean } {
   try {
     const raw = localStorage.getItem(TABS_KEY);
     if (raw) {
@@ -65,14 +65,14 @@ function loadTabs(): { tabs: TabState[]; activeId: string } {
           savedActive && tabs.some((t) => t.id === savedActive)
             ? savedActive
             : tabs[0]!.id;
-        return { tabs, activeId };
+        return { tabs, activeId, fresh: false };
       }
     }
   } catch {
     /* fallthrough */
   }
   const t = newTab(1);
-  return { tabs: [t], activeId: t.id };
+  return { tabs: [t], activeId: t.id, fresh: true };
 }
 
 export function App() {
@@ -80,6 +80,10 @@ export function App() {
   const [tabs, setTabs] = useState<TabState[]>(initial.tabs);
   const [activeId, setActiveId] = useState<string>(initial.activeId);
   const [counter, setCounter] = useState(initial.tabs.length + 1);
+  // Whether this load started from a brand-new tab (vs restored tabs) —
+  // captured once at mount, so a CLI-specified initial agent applies only
+  // to a genuinely fresh first window.
+  const initialFreshRef = useRef(initial.fresh);
 
   const isNarrow = useMediaQuery('(max-width: 1023px)');
   // The soft-keyboard toolbar is shown only while the on-screen keyboard
@@ -95,16 +99,32 @@ export function App() {
     let aborted = false;
     fetch('/api/info')
       .then((r) => r.json())
-      .then((d: { projectDir?: string; agents?: AgentKind[] }) => {
-        if (aborted) return;
-        if (typeof d.projectDir === 'string') setProjectDir(d.projectDir);
-        setAvailableAgents(Array.isArray(d.agents) ? d.agents : ['claude', 'codex']);
-      })
+      .then(
+        (d: {
+          projectDir?: string;
+          agents?: AgentKind[];
+          initialAgent?: AgentKind | null;
+        }) => {
+          if (aborted) return;
+          if (typeof d.projectDir === 'string') setProjectDir(d.projectDir);
+          // Apply a CLI-specified initial agent to the fresh first window
+          // before revealing the picker, so the modal never flashes. Both
+          // setStates here batch into one render with the tab agent set.
+          if (
+            (d.initialAgent === 'claude' || d.initialAgent === 'codex') &&
+            initialFreshRef.current
+          ) {
+            handleChooseAgent(activeId, d.initialAgent);
+          }
+          setAvailableAgents(Array.isArray(d.agents) ? d.agents : ['claude', 'codex']);
+        },
+      )
       .catch(() => {
         // /api/info unreachable — fall back to offering both in the modal.
         if (!aborted) setAvailableAgents(['claude', 'codex']);
       });
     return () => { aborted = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Guard against losing the running session to an accidental back-swipe
