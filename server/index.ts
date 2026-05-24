@@ -11,7 +11,7 @@
 
 import { createServer } from 'node:http';
 import { stat, readdir, rm } from 'node:fs/promises';
-import { existsSync, mkdirSync, accessSync, createWriteStream, constants as fsConstants } from 'node:fs';
+import { existsSync, mkdirSync, accessSync, createWriteStream, readdirSync, rmSync, rmdirSync, constants as fsConstants } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -100,9 +100,14 @@ function agentCommand(
   if (YOLO) args.push('--dangerously-skip-permissions');
   return { bin: CLAUDE_BIN, args };
 }
-// One artifacts directory shared by every session, so claude in one tab
-// and codex in another (and successive sessions) all see the same files.
-const ARTIFACTS_DIR = path.join(os.tmpdir(), 'ticket-web', 'artifacts');
+// One artifacts directory shared by every session in THIS server, so
+// claude in one tab and codex in another (and successive sessions) all
+// see the same files. We isolate each server instance under its own
+// PID-named subdir so two concurrent `terminal` runs don't trample each
+// other (and so shutting one down doesn't wipe the other's artifacts).
+const TMP_ROOT = path.join(os.tmpdir(), 'ticket-web');
+const INSTANCE_DIR = path.join(TMP_ROOT, String(process.pid));
+const ARTIFACTS_DIR = path.join(INSTANCE_DIR, 'artifacts');
 const RECENT_BUFFER_BYTES = 256 * 1024;
 const HEARTBEAT_MS = 30 * 1000;
 // Sessions live until either the server shuts down, the client explicitly
@@ -325,6 +330,42 @@ async function listArtifacts(dir: string): Promise<ArtifactFile[]> {
 
 // One watcher on the shared artifacts directory, broadcasting changes to
 // every connected session.
+//
+// Before we (re)create our own instance dir, sweep TMP_ROOT for orphan
+// instance dirs left behind by crashed runs (kill -9, power loss, etc).
+// We only touch entries that are clearly ours: numeric PID names whose
+// PID no longer points at a live process, plus the legacy `artifacts/`
+// and `sessions/` layouts from older versions. Anything else is left
+// alone in case a user has stuck something unrelated under that path.
+function cleanupOrphanTmpDirs(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(TMP_ROOT);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    const full = path.join(TMP_ROOT, name);
+    if (name === 'artifacts' || name === 'sessions') {
+      try { rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
+      continue;
+    }
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    if (pid === process.pid) continue;
+    try {
+      // kill(pid, 0) throws ESRCH if the PID is gone — that's our cue
+      // to remove the directory. If the PID has been recycled the
+      // worst case is we keep an orphan dir longer than needed.
+      process.kill(pid, 0);
+      continue;
+    } catch {
+      /* dead — fall through to rm */
+    }
+    try { rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+cleanupOrphanTmpDirs();
 mkdirSync(ARTIFACTS_DIR, { recursive: true });
 
 function broadcast(msg: ServerMessage) {
@@ -514,12 +555,20 @@ wss.on('connection', async (ws, req) => {
 });
 
 // When the server shuts down (SIGINT / SIGTERM), tear down every live
-// session so claude doesn't leak as an orphan process group.
+// session so claude doesn't leak as an orphan process group, and wipe
+// THIS instance's dir — artifacts live under os.tmpdir() and are meant
+// to be ephemeral (one tree per server lifetime). Concurrent instances
+// keep their own PID-named subdirs untouched.
 async function shutdown() {
   for (const state of sessions.values()) {
     try { state.ptyProc.kill(); } catch { /* ignore */ }
   }
-  artifactsWatcher.close().catch(() => undefined);
+  await artifactsWatcher.close().catch(() => undefined);
+  await rm(INSTANCE_DIR, { recursive: true, force: true }).catch(() => undefined);
+  // Best-effort: drop the empty parent if no concurrent instance still
+  // owns a subdir under it. rmdirSync refuses non-empty dirs, which is
+  // exactly the safety we want.
+  try { rmdirSync(TMP_ROOT); } catch { /* not empty, or already gone */ }
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
