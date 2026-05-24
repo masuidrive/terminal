@@ -6,6 +6,9 @@ import react from '@vitejs/plugin-react';
 const BACKEND_PORT = Number(process.env.SERVER_PORT ?? 4567);
 
 export default defineConfig({
+  // Relative asset paths so the built client works no matter what path
+  // prefix the server mounts it under (e.g. /<random-hex>/ when --lan).
+  base: './',
   plugins: [react()],
   server: {
     host: '0.0.0.0',

@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { AgentKind, ArtifactFile, ClientMessage, ServerMessage } from '../types.ts';
+import { BASE_PATH } from '../basePath.ts';
 
 const SESSION_KEY_PREFIX = 'ticket-web:tab:';
 const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000] as const;
@@ -65,7 +66,7 @@ function wsUrlForSession(sessionId: string | null, agent: AgentKind | null): str
   if (sessionId) params.set('session', sessionId);
   if (agent) params.set('agent', agent);
   const qs = params.toString();
-  return `${proto}://${host}/ws${qs ? `?${qs}` : ''}`;
+  return `${proto}://${host}${BASE_PATH}/ws${qs ? `?${qs}` : ''}`;
 }
 
 export function useSession(

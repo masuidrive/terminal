@@ -26,6 +26,10 @@ if (yolo) env.YOLO = '1';
 // Dev is always LAN-exposed: the client talks to the backend directly, so
 // it must be reachable from a phone on the same network.
 env.LAN = '1';
+// Dev would otherwise mount under a random /<hex> path because LAN=1
+// implies the access-control prefix; vite's proxy is rooted at the
+// known paths, so always skip the prefix in dev.
+env.NO_PREFIX = '1';
 if (argv.includes('--debug')) env.DEBUG = '1';
 if (argv.includes('-c') || argv.includes('--continue')) env.CONTINUE = '1';
 const agentArg = argv.find((a) => a === 'claude' || a === 'codex');

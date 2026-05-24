@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, accessSync, createWriteStream, constants as fsCo
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import chokidar from 'chokidar';
@@ -43,6 +43,12 @@ let continuePending = CONTINUE;
 // UI is reachable from a phone / other device on the same network.
 const LAN = process.env.LAN === '1';
 const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
+// When exposed beyond localhost, mount everything under a random
+// path-prefix (`/<hex>`) so a stray LAN visitor can't poke the API just
+// by knowing the port. `--no-prefix` opts out, and a localhost-only
+// server never adds one. A new prefix is generated every server run.
+const PREFIX_ENABLED = LAN && process.env.NO_PREFIX !== '1';
+const PREFIX = PREFIX_ENABLED ? '/' + randomBytes(4).toString('hex') : '';
 
 // Whether an executable is resolvable — either an absolute path or a bare
 // name found on PATH. Used to decide which agents the picker offers.
@@ -112,9 +118,17 @@ if (DEBUG) {
   });
 }
 
+// `Referrer-Policy: no-referrer` so a click on an external link from
+// inside the app — including from a sandboxed HTML artifact — never
+// leaks the random prefix (or any URL path) to the destination site.
+app.use((_req, res, next) => {
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  next();
+});
+
 // The :sid segment is vestigial — artifacts are shared, not per-session —
 // but kept so existing client URLs (/artifacts/<sid>/<path>) still resolve.
-app.get('/artifacts/:sid/*splat', async (req, res) => {
+app.get(PREFIX + '/artifacts/:sid/*splat', async (req, res) => {
   const splat = (req.params as Record<string, string | string[]>).splat;
   const rel = Array.isArray(splat) ? splat.join('/') : (splat ?? '');
   const base = ARTIFACTS_DIR;
@@ -134,7 +148,7 @@ app.get('/artifacts/:sid/*splat', async (req, res) => {
   res.sendFile(resolved);
 });
 
-app.get('/api/info', (_req, res) => {
+app.get(PREFIX + '/api/info', (_req, res) => {
   res.json({
     projectDir: PROJECT_DIR,
     agents: AVAILABLE_AGENTS,
@@ -146,7 +160,7 @@ app.get('/api/info', (_req, res) => {
 // filename in the query. The file lands in the shared artifacts dir,
 // auto-renamed on collision; the response gives the absolute path so the
 // client can paste it at the terminal cursor.
-app.post('/api/artifacts/upload', async (req, res) => {
+app.post(PREFIX + '/api/artifacts/upload', async (req, res) => {
   try {
     const raw = String(req.query.name ?? 'file');
     const safe = sanitizeName(raw);
@@ -162,7 +176,7 @@ app.post('/api/artifacts/upload', async (req, res) => {
 // Delete an artifact by its path relative to ARTIFACTS_DIR. Subdirs are
 // allowed (artifacts can be nested) but the resolved target must stay
 // inside ARTIFACTS_DIR — `../etc/passwd` and friends are rejected.
-app.delete('/api/artifacts', async (req, res) => {
+app.delete(PREFIX + '/api/artifacts', async (req, res) => {
   const raw = String(req.query.name ?? '');
   if (!raw) {
     res.status(400).end();
@@ -181,7 +195,7 @@ app.delete('/api/artifacts', async (req, res) => {
   }
 });
 
-app.get('/api/sessions', (_req, res) => {
+app.get(PREFIX + '/api/sessions', (_req, res) => {
   res.json({
     sessions: [...sessions.keys()],
     live: [...sessions.values()].map((s) => ({
@@ -194,8 +208,10 @@ app.get('/api/sessions', (_req, res) => {
 
 // Explicit teardown — called by the client when the user closes a tab.
 // Idempotent; returns 204 whether or not the id was live.
-app.delete('/api/sessions/:id', async (req, res) => {
-  const state = sessions.get(req.params.id);
+app.delete(PREFIX + '/api/sessions/:id', async (req, res) => {
+  // Concatenated route path loses Express's literal-typed params, so id
+  // is widened to string | string[]; coerce.
+  const state = sessions.get(String(req.params.id));
   if (state) {
     try { state.ptyProc.kill(); } catch { /* ignore */ }
     if (state.ws && state.ws.readyState === state.ws.OPEN) {
@@ -212,13 +228,14 @@ app.delete('/api/sessions/:id', async (req, res) => {
 // process, so it serves the SPA on the same origin as the API.
 const CLIENT_DIR = path.join(import.meta.dirname, '..', 'dist');
 if (existsSync(CLIENT_DIR)) {
-  app.use(express.static(CLIENT_DIR));
+  if (PREFIX) app.use(PREFIX, express.static(CLIENT_DIR));
+  else app.use(express.static(CLIENT_DIR));
 }
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({
   server: httpServer,
-  path: '/ws',
+  path: PREFIX + '/ws',
   perMessageDeflate: false,
 });
 
@@ -558,9 +575,9 @@ httpServer.once('listening', () => {
   }
   const addr = httpServer.address();
   const port = addr && typeof addr === 'object' ? addr.port : BASE_PORT;
-  const urls = [`http://localhost:${port}/`];
+  const urls = [`http://localhost:${port}${PREFIX}/`];
   if (LAN) {
-    for (const ip of lanAddresses()) urls.push(`http://${ip}:${port}/`);
+    for (const ip of lanAddresses()) urls.push(`http://${ip}:${port}${PREFIX}/`);
   }
   console.log('\n  terminal running at:');
   for (const u of urls) console.log(`    ${u}`);

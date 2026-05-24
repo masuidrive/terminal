@@ -31,6 +31,7 @@ Arguments:
 Options:
   -c, --continue   Resume the previous conversation (first window only)
   --lan            Also serve on the local network (default: localhost only)
+  --no-prefix      Don't mount under a random /<hex> path (only meaningful with --lan)
   --yolo           Spawn the agent without permission prompts
   --debug          Verbose logs + per-request access log
   --port <n>       Pin a port; fails if busy (default 4567, else auto-increments)
@@ -53,6 +54,7 @@ if (argv.includes('--yolo') || process.env.YOLO === '1') {
 }
 if (argv.includes('--lan')) process.env.LAN = '1';
 if (argv.includes('--debug')) process.env.DEBUG = '1';
+if (argv.includes('--no-prefix')) process.env.NO_PREFIX = '1';
 if (argv.includes('-c') || argv.includes('--continue')) process.env.CONTINUE = '1';
 
 // `--port N` pins a port (a busy one is then an error); with no port given

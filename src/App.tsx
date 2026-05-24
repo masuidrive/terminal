@@ -15,6 +15,7 @@ import { useSession } from './hooks/useSession.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import { useSoftKeyboard } from './hooks/useSoftKeyboard.ts';
 import type { AgentKind, TabState } from './types.ts';
+import { BASE_PATH } from './basePath.ts';
 
 const TABS_KEY = 'ticket-web:tabs';
 const ACTIVE_KEY = 'ticket-web:activeTabId';
@@ -103,7 +104,7 @@ export function App() {
   const [availableAgents, setAvailableAgents] = useState<AgentKind[] | null>(null);
   useEffect(() => {
     let aborted = false;
-    fetch('/api/info')
+    fetch(BASE_PATH + '/api/info')
       .then((r) => r.json())
       .then(
         (d: {
@@ -194,7 +195,7 @@ export function App() {
       /* ignore */
     }
     if (storedSession) {
-      fetch(`/api/sessions/${encodeURIComponent(storedSession)}`, {
+      fetch(`${BASE_PATH}/api/sessions/${encodeURIComponent(storedSession)}`, {
         method: 'DELETE',
         keepalive: true,
       }).catch(() => undefined);
@@ -322,7 +323,7 @@ async function uploadAndInsert(
 ) {
   for (const file of files) {
     try {
-      const url = `/api/artifacts/upload?name=${encodeURIComponent(file.name)}`;
+      const url = `${BASE_PATH}/api/artifacts/upload?name=${encodeURIComponent(file.name)}`;
       const r = await fetch(url, { method: 'POST', body: file });
       if (!r.ok) {
         console.error('[drop] upload failed:', r.status);
