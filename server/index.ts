@@ -13,6 +13,7 @@ import { createServer } from 'node:http';
 import { stat, readdir, rm } from 'node:fs/promises';
 import { existsSync, mkdirSync, accessSync, createWriteStream, constants as fsConstants } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -524,16 +525,61 @@ async function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+// Interface names that almost never represent a useful URL to print:
+// Docker bridges (`docker0`, `br-<hash>`, `veth*`), VM hypervisors
+// (`virbr*`, `vmnet*`, `vboxnet*`), and macOS-internal links (`awdl*`,
+// `llw*`, `anpi*`, `ap1`, Internet-Sharing `bridge*`). Tailscale and
+// WireGuard (`tailscale*`, `utun*`, `wg*`) are deliberately *not*
+// filtered — those are typically the addresses the user wants.
+const SKIP_IFACE = /^(docker|br-|veth|virbr|vmnet|vboxnet|awdl|llw|anpi|ap1|bridge\d)/;
+
 // Non-internal IPv4 addresses, so the URL printed at startup is reachable
 // from a phone / other device on the same LAN.
 function lanAddresses(): string[] {
   const out: string[] = [];
-  for (const ifaces of Object.values(os.networkInterfaces())) {
+  for (const [name, ifaces] of Object.entries(os.networkInterfaces())) {
+    if (SKIP_IFACE.test(name)) continue;
     for (const i of ifaces ?? []) {
       if (i.family === 'IPv4' && !i.internal) out.push(i.address);
     }
   }
   return out;
+}
+
+// Tailscale's MagicDNS hostname for this machine (e.g.
+// `myhost.tailXXXX.ts.net`). Resolves on any device in the same tailnet
+// with MagicDNS enabled, regardless of the IP changing. Returns null
+// silently if tailscale isn't installed, isn't logged in, or doesn't
+// answer within the timeout — printing the IP is always sufficient.
+function tailscaleHostname(timeoutMs = 1000): Promise<string | null> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('tailscale', ['status', '--json'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = '';
+    const done = (v: string | null) => {
+      clearTimeout(timer);
+      try { child.kill(); } catch { /* ignore */ }
+      resolve(v);
+    };
+    const timer = setTimeout(() => done(null), timeoutMs);
+    child.stdout.on('data', (b: Buffer) => { out += b.toString('utf8'); });
+    child.on('error', () => done(null));
+    child.on('close', (code) => {
+      if (code !== 0) { done(null); return; }
+      try {
+        const dns: unknown = JSON.parse(out)?.Self?.DNSName;
+        // Strip the trailing dot the API returns on the FQDN.
+        done(typeof dns === 'string' && dns ? dns.replace(/\.$/, '') : null);
+      } catch {
+        done(null);
+      }
+    });
+  });
 }
 
 // The error handler armed for the current listen attempt; cleared once a
@@ -579,20 +625,29 @@ httpServer.once('listening', () => {
   if (LAN) {
     for (const ip of lanAddresses()) urls.push(`http://${ip}:${port}${PREFIX}/`);
   }
-  console.log('\n  terminal running at:');
-  for (const u of urls) console.log(`    ${u}`);
-  console.log('');
-  console.log('  options:  [claude|codex]  -c  --lan  --yolo  --debug  --port <n>  --help');
-  console.log('');
-  if (AVAILABLE_AGENTS.length === 0) {
-    console.error('  Warning: neither claude nor codex was found on PATH.\n');
-  }
-  if (DEBUG) {
-    console.log(`[debug] artifacts: ${ARTIFACTS_DIR}`);
-    console.log(`[debug] project:   ${PROJECT_DIR}`);
-    console.log(`[debug] agents:    [${AVAILABLE_AGENTS.join(', ')}] (claude=${CLAUDE_BIN}, codex=${CODEX_BIN})`);
-    console.log(`[debug] mode:      ${YOLO ? 'YOLO' : 'normal'}, ${LAN ? 'LAN' : 'localhost-only'}`);
-  }
+  // Resolve the Tailscale MagicDNS name (best-effort, short timeout) so
+  // the URL block can include the stable hostname alongside the raw IPs.
+  // Everything that prints to the same block lives inside this .then so
+  // the output stays in order — otherwise the warning/debug lines below
+  // would race ahead of the URL list.
+  const tsPromise = LAN ? tailscaleHostname() : Promise.resolve(null);
+  tsPromise.then((tsName) => {
+    if (tsName) urls.push(`http://${tsName}:${port}${PREFIX}/`);
+    console.log('\n  terminal running at:');
+    for (const u of urls) console.log(`    ${u}`);
+    console.log('');
+    console.log('  options:  [claude|codex]  -c  --lan  --yolo  --debug  --port <n>  --help');
+    console.log('');
+    if (AVAILABLE_AGENTS.length === 0) {
+      console.error('  Warning: neither claude nor codex was found on PATH.\n');
+    }
+    if (DEBUG) {
+      console.log(`[debug] artifacts: ${ARTIFACTS_DIR}`);
+      console.log(`[debug] project:   ${PROJECT_DIR}`);
+      console.log(`[debug] agents:    [${AVAILABLE_AGENTS.join(', ')}] (claude=${CLAUDE_BIN}, codex=${CODEX_BIN})`);
+      console.log(`[debug] mode:      ${YOLO ? 'YOLO' : 'normal'}, ${LAN ? 'LAN' : 'localhost-only'}`);
+    }
+  });
 });
 
 startListening(BASE_PORT, MAX_PORT_TRIES);
