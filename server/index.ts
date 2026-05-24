@@ -637,6 +637,7 @@ httpServer.once('listening', () => {
     for (const u of urls) console.log(`    ${u}`);
     console.log('');
     console.log('  options:  [claude|codex]  -c  --lan  --yolo  --debug  --port <n>  --help');
+    console.log('  port:     default 4567 — auto-increments to the next free port when --port is not set');
     console.log('');
     if (AVAILABLE_AGENTS.length === 0) {
       console.error('  Warning: neither claude nor codex was found on PATH.\n');

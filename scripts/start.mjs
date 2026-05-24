@@ -34,7 +34,8 @@ Options:
   --no-prefix      Don't mount under a random /<hex> path (only meaningful with --lan)
   --yolo           Spawn the agent without permission prompts
   --debug          Verbose logs + per-request access log
-  --port <n>       Pin a port; fails if busy (default 4567, else auto-increments)
+  --port <n>       Pin a port; fails if busy. Without --port, starts at 4567 and
+                   auto-increments to the next free port
   -h, --help       Show this help
 
 Environment:
