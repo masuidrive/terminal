@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
+import type { MouseEvent } from 'react';
 import type { ArtifactFile } from '../types.ts';
 import { ArtifactRenderer } from './renderers.tsx';
+
+interface MenuAnchor {
+  file: ArtifactFile;
+  x: number;  // viewport coords of the trigger's right edge
+  y: number;  // viewport coords just below the trigger
+}
 
 interface Props {
   sessionId: string | null;
@@ -15,12 +22,50 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
   const [follow, setFollow] = useState(true);
   // Collapse the file list to give the preview the full pane width.
   const [listCollapsed, setListCollapsed] = useState(false);
+  // Per-row "more" menu: anchor coords + which file it's open for.
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
 
   useEffect(() => {
     if (!follow) return;
     if (artifacts.length > 0) setSelected(artifacts[0]!.path);
     else setSelected(null);
   }, [artifacts, follow]);
+
+  // Close the menu when the file disappears (e.g., another tab deleted it).
+  useEffect(() => {
+    if (menuAnchor && !artifacts.some((f) => f.path === menuAnchor.file.path)) {
+      setMenuAnchor(null);
+    }
+  }, [artifacts, menuAnchor]);
+
+  // Close on outside click, Escape, or any scroll (the fixed position
+  // would otherwise drift away from the trigger).
+  useEffect(() => {
+    if (!menuAnchor) return;
+    function onDown(e: globalThis.MouseEvent) {
+      const t = e.target as Element;
+      if (t.closest('.artifact-menu') || t.closest('.artifact-row-menu')) return;
+      setMenuAnchor(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setMenuAnchor(null);
+    }
+    function onScroll() { setMenuAnchor(null); }
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, [menuAnchor]);
+
+  function openMenu(e: MouseEvent<HTMLButtonElement>, f: ArtifactFile) {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMenuAnchor({ file: f, x: rect.right, y: rect.bottom + 4 });
+  }
 
   // With 0-1 artifacts there's no list to pick from, so fall back to the
   // sole artifact.
@@ -66,19 +111,31 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
       <div className="artifacts-body">
         <div className="artifacts-list">
           {artifacts.map((f) => (
-            <button
+            <div
               key={f.path}
               className={'artifact-row' + (selected === f.path ? ' active' : '')}
-              onClick={() => {
-                setFollow(false);
-                setSelected(f.path);
-              }}
             >
-              <span className="artifact-name">{f.path}</span>
-              <span className="artifact-meta">
-                {fmtSize(f.size)} · {fmtTime(f.mtime)}
-              </span>
-            </button>
+              <button
+                className="artifact-row-main"
+                onClick={() => {
+                  setFollow(false);
+                  setSelected(f.path);
+                }}
+              >
+                <span className="artifact-name">{f.path}</span>
+                <span className="artifact-meta">
+                  {fmtSize(f.size)} · {fmtTime(f.mtime)}
+                </span>
+              </button>
+              <button
+                className="artifact-row-menu"
+                onClick={(e) => openMenu(e, f)}
+                title="More actions"
+                aria-label="More actions"
+              >
+                ⋯
+              </button>
+            </div>
           ))}
         </div>
         <div className="artifact-pane">
@@ -104,8 +161,100 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
           )}
         </div>
       </div>
+      {menuAnchor && (
+        <div
+          className="artifact-menu"
+          role="menu"
+          style={{
+            position: 'fixed',
+            left: menuAnchor.x,
+            top: menuAnchor.y,
+            // Anchor to the trigger's right edge; popup grows to the left
+            // so it doesn't run off the viewport.
+            transform: 'translate(-100%, 0)',
+          }}
+        >
+          <button
+            onClick={() => {
+              void copyToClipboard(basename(menuAnchor.file.path));
+              setMenuAnchor(null);
+            }}
+          >
+            Copy name
+          </button>
+          <button
+            onClick={() => {
+              void copyToClipboard(
+                artifactsDir
+                  ? `${artifactsDir}/${menuAnchor.file.path}`
+                  : menuAnchor.file.path,
+              );
+              setMenuAnchor(null);
+            }}
+          >
+            Copy path
+          </button>
+          <button
+            onClick={() => {
+              if (sessionId) downloadArtifact(sessionId, menuAnchor.file);
+              setMenuAnchor(null);
+            }}
+          >
+            Download
+          </button>
+          <button
+            className="artifact-menu-danger"
+            onClick={() => {
+              void deleteArtifact(menuAnchor.file);
+              setMenuAnchor(null);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
     </div>
   );
+}
+
+function basename(p: string): string {
+  return p.slice(p.lastIndexOf('/') + 1);
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    /* clipboard may be blocked over http or in old browsers */
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch { /* give up */ }
+  ta.remove();
+}
+
+function downloadArtifact(sessionId: string, file: ArtifactFile): void {
+  const a = document.createElement('a');
+  a.href = `/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`;
+  a.download = basename(file.path);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function deleteArtifact(file: ArtifactFile): Promise<void> {
+  try {
+    await fetch(`/api/artifacts?name=${encodeURIComponent(file.path)}`, {
+      method: 'DELETE',
+    });
+  } catch (err) {
+    console.error('[artifacts] delete failed:', err);
+  }
 }
 
 function ArtifactPathBar({

@@ -10,7 +10,7 @@
 // socket is terminated. The next client connect reattaches.
 
 import { createServer } from 'node:http';
-import { stat, readdir } from 'node:fs/promises';
+import { stat, readdir, rm } from 'node:fs/promises';
 import { existsSync, mkdirSync, accessSync, createWriteStream, constants as fsConstants } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
@@ -154,6 +154,28 @@ app.post('/api/artifacts/upload', async (req, res) => {
     const dest = path.join(ARTIFACTS_DIR, finalName);
     await pipeline(req, createWriteStream(dest));
     res.json({ name: finalName, path: dest });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Delete an artifact by its path relative to ARTIFACTS_DIR. Subdirs are
+// allowed (artifacts can be nested) but the resolved target must stay
+// inside ARTIFACTS_DIR — `../etc/passwd` and friends are rejected.
+app.delete('/api/artifacts', async (req, res) => {
+  const raw = String(req.query.name ?? '');
+  if (!raw) {
+    res.status(400).end();
+    return;
+  }
+  const target = path.resolve(ARTIFACTS_DIR, raw);
+  if (!target.startsWith(ARTIFACTS_DIR + path.sep)) {
+    res.status(403).end();
+    return;
+  }
+  try {
+    await rm(target, { force: true });
+    res.status(204).end();
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

@@ -342,14 +342,10 @@ button:hover { background: var(--bg-elev-2); }
 }
 .artifact-row {
   display: flex;
-  flex-direction: column;
   align-items: stretch;
-  gap: 2px;
-  padding: 8px 10px;
   border-radius: 6px;
   font-size: 13px;
   width: 100%;
-  text-align: left;
   border: 1px solid transparent;
 }
 .artifact-row:hover { background: var(--bg-elev-2); }
@@ -357,8 +353,54 @@ button:hover { background: var(--bg-elev-2); }
   background: var(--bg-elev-2);
   border-color: var(--accent);
 }
+.artifact-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+  border-radius: 6px 0 0 6px;
+}
+.artifact-row-menu {
+  width: 28px;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 0 6px 6px 0;
+}
+.artifact-row-menu:hover {
+  background: var(--bg-elev);
+  color: var(--fg);
+}
 .artifact-name { color: var(--fg); }
 .artifact-meta { color: var(--fg-dim); font-size: 11px; }
+
+.artifact-menu {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  z-index: 1000;
+}
+.artifact-menu button {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--fg);
+  border-radius: 4px;
+  background: transparent;
+}
+.artifact-menu button:hover { background: var(--bg-elev); }
+.artifact-menu .artifact-menu-danger { color: #ff7676; }
+.artifact-menu .artifact-menu-danger:hover { background: rgba(255, 118, 118, 0.12); }
 
 .artifact-pane {
   display: grid;
