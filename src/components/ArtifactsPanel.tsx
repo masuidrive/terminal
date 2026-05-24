@@ -46,7 +46,10 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
             onClick={() => setListCollapsed((c) => !c)}
             title={listCollapsed ? 'Show file list' : 'Hide file list'}
           >
-            {listCollapsed ? '»' : '«'}
+            {/* Two glyphs; CSS shows the one matching the current layout
+                (side-by-side: « », stacked vertically: ▲ ▼). */}
+            <span className="arrow-h">{listCollapsed ? '»' : '«'}</span>
+            <span className="arrow-v">{listCollapsed ? '▼' : '▲'}</span>
           </button>
         )}
         <span>Artifacts</span>

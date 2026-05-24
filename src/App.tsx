@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { DragEvent } from 'react';
 import {
   Panel,
   PanelGroup,
@@ -84,6 +85,11 @@ export function App() {
   // captured once at mount, so a CLI-specified initial agent applies only
   // to a genuinely fresh first window.
   const initialFreshRef = useRef(initial.fresh);
+
+  // Per-tab sendInput, kept here so a window-level file drop can paste
+  // the uploaded path into whichever tab is active. TabPanels register
+  // and unregister themselves on mount/unmount.
+  const [sendInputs] = useState(() => new Map<string, (data: string) => void>());
 
   const isNarrow = useMediaQuery('(max-width: 1023px)');
   // The soft-keyboard toolbar is shown only while the on-screen keyboard
@@ -228,8 +234,46 @@ export function App() {
     );
   }
 
+  // Window-level file drop: upload to the shared artifacts dir, paste the
+  // resulting path into the active tab's terminal.
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  function onDragEnter(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    if (!dragOver) setDragOver(true);
+  }
+  function onDragOver(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+  function onDragLeave(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragOver(false);
+  }
+  function onDrop(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    const send = sendInputs.get(activeId);
+    void uploadAndInsert(files, send);
+  }
+
   return (
-    <div className="app">
+    <div
+      className={'app' + (dragOver ? ' dragover' : '')}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <Tabs
         tabs={tabs}
         activeId={activeId}
@@ -253,13 +297,43 @@ export function App() {
               keyboardOpen={keyboardOpen}
               agent={t.agent ?? null}
               availableAgents={availableAgents}
+              sendInputs={sendInputs}
               onChooseAgent={(a) => handleChooseAgent(t.id, a)}
               onExit={() => handleClose(t.id)}
             />
           ))}
       </div>
+      {dragOver && (
+        <div className="app-drop-overlay">Drop to upload to artifacts</div>
+      )}
     </div>
   );
+}
+
+function hasFiles(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  for (const t of Array.from(dt.types ?? [])) if (t === 'Files') return true;
+  return (dt.files?.length ?? 0) > 0;
+}
+
+async function uploadAndInsert(
+  files: File[],
+  send: ((data: string) => void) | undefined,
+) {
+  for (const file of files) {
+    try {
+      const url = `/api/artifacts/upload?name=${encodeURIComponent(file.name)}`;
+      const r = await fetch(url, { method: 'POST', body: file });
+      if (!r.ok) {
+        console.error('[drop] upload failed:', r.status);
+        continue;
+      }
+      const data = (await r.json()) as { path?: string };
+      if (typeof data.path === 'string' && send) send(data.path + ' ');
+    } catch (err) {
+      console.error('[drop] upload error:', err);
+    }
+  }
 }
 
 // One stable layout across all three view modes. We never re-parent the
@@ -273,6 +347,7 @@ function TabPanel({
   keyboardOpen,
   agent,
   availableAgents,
+  sendInputs,
   onChooseAgent,
   onExit,
 }: {
@@ -282,10 +357,16 @@ function TabPanel({
   keyboardOpen: boolean;
   agent: AgentKind | null;
   availableAgents: AgentKind[] | null;
+  sendInputs: Map<string, (data: string) => void>;
   onChooseAgent: (agent: AgentKind) => void;
   onExit: () => void;
 }) {
   const session = useSession(tabId, true, agent, onExit);
+  // Register this tab's sendInput so a window-level file drop can target it.
+  useEffect(() => {
+    sendInputs.set(tabId, session.sendInput);
+    return () => { sendInputs.delete(tabId); };
+  }, [tabId, session.sendInput, sendInputs]);
   // A fresh tab with no agent and no server session yet needs one chosen.
   const needsAgent = agent == null && session.sessionId == null;
   // With exactly one agent installed, skip the modal and pick it directly.

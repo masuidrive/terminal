@@ -45,6 +45,27 @@ button:hover { background: var(--bg-elev-2); }
   height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
+  position: relative;  /* anchor for the window-wide drop overlay */
+}
+.app.dragover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 3px dashed var(--accent);
+  pointer-events: none;
+  z-index: 999;
+}
+.app-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 1000;
 }
 
 /* Tabs ----------------------------------------------------------------- */
@@ -158,23 +179,6 @@ button:hover { background: var(--bg-elev-2); }
   height: 100%;
   width: 100%;
   overflow: hidden;
-  position: relative;
-}
-.terminal-pane.dragover {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
-}
-.terminal-drop-overlay {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.55);
-  color: var(--accent);
-  font-size: 14px;
-  font-weight: 600;
-  pointer-events: none;
-  z-index: 5;
 }
 .terminal-host {
   width: 100%;
@@ -316,6 +320,9 @@ button:hover { background: var(--bg-elev-2); }
   color: var(--fg);
   border-color: var(--accent-2);
 }
+/* Default layout: horizontal arrows. The vertical pair is swapped in
+   below when the artifacts pane stacks vertically. */
+.artifacts-collapse .arrow-v { display: none; }
 .artifacts-body {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -563,6 +570,10 @@ button:hover { background: var(--bg-elev-2); }
     border-right: none;
     border-bottom: 1px solid var(--border);
   }
+  /* List stacks above the preview now — swap the collapse arrows to
+     vertical so they point at the part being shown/hidden. */
+  .artifacts-collapse .arrow-h { display: none; }
+  .artifacts-collapse .arrow-v { display: inline; }
 }
 
 /* Soft-keyboard toolbar (Termux-style extra-keys row) ------------------ */
