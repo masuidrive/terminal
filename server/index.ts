@@ -11,7 +11,8 @@
 
 import { createServer } from 'node:http';
 import { stat, readdir } from 'node:fs/promises';
-import { existsSync, mkdirSync, accessSync, constants as fsConstants } from 'node:fs';
+import { existsSync, mkdirSync, accessSync, createWriteStream, constants as fsConstants } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -141,6 +142,23 @@ app.get('/api/info', (_req, res) => {
   });
 });
 
+// Drop a file into the terminal pane → POST the raw bytes here with the
+// filename in the query. The file lands in the shared artifacts dir,
+// auto-renamed on collision; the response gives the absolute path so the
+// client can paste it at the terminal cursor.
+app.post('/api/artifacts/upload', async (req, res) => {
+  try {
+    const raw = String(req.query.name ?? 'file');
+    const safe = sanitizeName(raw);
+    const finalName = await uniqueName(ARTIFACTS_DIR, safe);
+    const dest = path.join(ARTIFACTS_DIR, finalName);
+    await pipeline(req, createWriteStream(dest));
+    res.json({ name: finalName, path: dest });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 app.get('/api/sessions', (_req, res) => {
   res.json({
     sessions: [...sessions.keys()],
@@ -217,6 +235,29 @@ function appendRecent(state: SessionState, data: string) {
   }
   state.recent = combined;
   state.lastActivity = Date.now();
+}
+
+// Strip any directory parts a browser might send (Windows paths arrive
+// with backslashes) and any control characters; reject empty / dotfile
+// edge cases.
+function sanitizeName(raw: string): string {
+  const n = (raw.split(/[/\\]/).pop() ?? '')
+    .replace(/[ -]/g, '_')
+    .trim();
+  if (!n || n === '.' || n === '..') return 'file';
+  return n;
+}
+
+// Find a non-colliding name in `dir`: foo.png, foo-1.png, foo-2.png, ...
+async function uniqueName(dir: string, name: string): Promise<string> {
+  if (!existsSync(path.join(dir, name))) return name;
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  for (let i = 1; i < 10000; i++) {
+    const candidate = `${base}-${i}${ext}`;
+    if (!existsSync(path.join(dir, candidate))) return candidate;
+  }
+  return `${base}-${Date.now()}${ext}`;
 }
 
 async function listArtifacts(dir: string): Promise<ArtifactFile[]> {

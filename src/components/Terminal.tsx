@@ -7,7 +7,8 @@
 // React only unmounts when the tab itself unmounts, view-mode toggles
 // don't touch us.
 
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { DragEvent } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -137,9 +138,73 @@ export function TerminalView({ session, visible }: Props) {
     return () => ro.disconnect();
   }, [visible]);
 
+  // Drop a file onto the terminal: upload it to the shared artifacts dir
+  // and paste the resulting absolute path at the cursor.
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  function onDragEnter(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    if (!dragOver) setDragOver(true);
+  }
+  function onDragOver(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+  function onDragLeave(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragOver(false);
+  }
+  function onDrop(e: DragEvent<HTMLDivElement>) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) void uploadAndInsert(files, session);
+  }
+
   return (
-    <div className="terminal-pane" style={{ display: visible ? 'block' : 'none' }}>
+    <div
+      className={'terminal-pane' + (dragOver ? ' dragover' : '')}
+      style={{ display: visible ? 'block' : 'none' }}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div ref={hostRef} className="terminal-host" />
+      {dragOver && (
+        <div className="terminal-drop-overlay">Drop to upload to artifacts</div>
+      )}
     </div>
   );
+}
+
+function hasFiles(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  // `types` is a DOMStringList in older browsers, an array in modern ones.
+  for (const t of Array.from(dt.types ?? [])) if (t === 'Files') return true;
+  return (dt.files?.length ?? 0) > 0;
+}
+
+async function uploadAndInsert(files: File[], session: SessionApi) {
+  for (const file of files) {
+    try {
+      const url = `/api/artifacts/upload?name=${encodeURIComponent(file.name)}`;
+      const r = await fetch(url, { method: 'POST', body: file });
+      if (!r.ok) {
+        console.error('[drop] upload failed:', r.status);
+        continue;
+      }
+      const data = (await r.json()) as { path?: string };
+      if (typeof data.path === 'string') session.sendInput(data.path + ' ');
+    } catch (err) {
+      console.error('[drop] upload error:', err);
+    }
+  }
 }

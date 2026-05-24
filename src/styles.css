@@ -158,6 +158,23 @@ button:hover { background: var(--bg-elev-2); }
   height: 100%;
   width: 100%;
   overflow: hidden;
+  position: relative;
+}
+.terminal-pane.dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+.terminal-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 5;
 }
 .terminal-host {
   width: 100%;
