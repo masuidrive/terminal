@@ -444,24 +444,28 @@ function TabPanel({
     if (needsAgent) onRefreshResumable();
   }, [needsAgent, onRefreshResumable]);
   // With exactly one agent installed AND nothing to resume, skip the
-  // modal and pick the lone agent directly. If sessions exist we still
-  // show the picker so the user can choose between resume and fresh.
+  // modal and pick the lone agent directly. Wait for resumable to
+  // RESOLVE (not just be present) — auto-picking before the fetch
+  // returns would race past a session the user wanted to resume.
   useEffect(() => {
     if (
       needsAgent &&
       availableAgents != null &&
       availableAgents.length === 1 &&
-      (resumable?.length ?? 0) === 0
+      resumable !== null &&
+      resumable.length === 0
     ) {
       onChooseAgent(availableAgents[0]!);
     }
   }, [needsAgent, availableAgents, resumable, onChooseAgent]);
-  // Modal when there's a real choice (multiple agents OR something to
-  // resume OR no agents at all — the empty modal then explains why).
+  // Modal when there's a real choice OR while the resume list is still
+  // loading (in which case we show a placeholder so the user doesn't
+  // race past a session that's about to appear). Hidden only when we
+  // KNOW the only path forward is the single lone agent.
   const showAgentModal =
     needsAgent &&
     availableAgents != null &&
-    !(availableAgents.length === 1 && (resumable?.length ?? 0) === 0);
+    !(availableAgents.length === 1 && resumable !== null && resumable.length === 0);
   // Surface WS state so debugging "blank screen" cases doesn't need
   // DevTools — a banner appears when we're disconnected.
   const showStatus = !needsAgent && !session.connected;
@@ -498,13 +502,25 @@ function TabPanel({
       }}
       data-tab-id={tabId}
     >
-      {showStatus && (
+      {session.kicked ? (
+        <div className="status-banner status-banner-kicked">
+          <span>
+            Another device is using this session.{' '}
+            <button
+              className="status-banner-action"
+              onClick={() => window.location.reload()}
+            >
+              Reload to take it back
+            </button>
+          </span>
+        </div>
+      ) : showStatus ? (
         <div className="status-banner">
           {session.sessionId
             ? `Reconnecting to session ${session.sessionId.slice(0, 8)}…`
             : 'Connecting to server…'}
         </div>
-      )}
+      ) : null}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <PanelGroup
           direction="horizontal"
@@ -542,7 +558,7 @@ function TabPanel({
       {showAgentModal && (
         <AgentModal
           agents={availableAgents ?? []}
-          resumable={resumable ?? []}
+          resumable={resumable}
           onPick={onChooseAgent}
           onResume={onResume}
         />

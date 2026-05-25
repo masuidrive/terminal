@@ -20,6 +20,12 @@ export interface SessionApi {
   artifactsDir: string | null;
   artifacts: ArtifactFile[];
   connected: boolean;
+  /** True after the server bounced us with code 4000 — i.e. another
+   *  device picked up this same session and the server only allows one
+   *  attached viewer at a time. We stop reconnecting so we don't fight
+   *  the new viewer; the UI surfaces this with a "reload to reclaim"
+   *  banner. Reset on next successful open. */
+  kicked: boolean;
   onPtyData: (cb: (data: string) => void) => () => void;
   sendInput: (data: string) => void;
   sendResize: (cols: number, rows: number) => void;
@@ -92,6 +98,7 @@ export function useSession(
   const [artifactsDir, setArtifactsDir] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
   const [connected, setConnected] = useState(false);
+  const [kicked, setKicked] = useState(false);
 
   // Soft-keyboard Ctrl modifier. The ref is what sendInput consults — it
   // must stay readable from sendInput's stable closure, which Terminal
@@ -165,6 +172,7 @@ export function useSession(
       ws.onopen = () => {
         clearOpenTimer();
         setConnected(true);
+        setKicked(false);
         reconnectAttemptsRef.current = 0;
         // Drain the pre-open queue. We intentionally don't replay these
         // through sendRaw to avoid re-queueing in pathological cases.
@@ -226,8 +234,12 @@ export function useSession(
         wsRef.current = null;
         if (closedByUserRef.current) return;
         // Code 4000 means the server kicked us off because a newer
-        // connection replaced us — don't fight it.
-        if (ev.code === 4000) return;
+        // connection replaced us — don't fight it. Flag the UI so it
+        // can show "another device took over; reload to reclaim".
+        if (ev.code === 4000) {
+          setKicked(true);
+          return;
+        }
         const attempt = reconnectAttemptsRef.current++;
         const delay = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
         clearReconnectTimer();
@@ -319,6 +331,7 @@ export function useSession(
     artifactsDir,
     artifacts,
     connected,
+    kicked,
     onPtyData,
     sendInput,
     sendResize,
