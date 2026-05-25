@@ -1,10 +1,10 @@
-import type { TabState } from '../types.ts';
+import type { SessionSummary } from '../types.ts';
 
 type ViewMode = 'split' | 'term' | 'artifacts';
 
 interface Props {
-  tabs: TabState[];
-  activeId: string;
+  tabs: SessionSummary[];
+  activeId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
@@ -25,6 +25,20 @@ function shortenPath(p: string): string {
   return '…/' + parts.slice(-2).join('/');
 }
 
+// Title is derived from the agent + this session's position among
+// sessions of the same agent. So "claude 1", "codex 1", "claude 2",
+// matching what the user used to see in the per-tab title.
+function deriveTitles(tabs: SessionSummary[]): Map<string, string> {
+  const counts = new Map<string, number>();
+  const out = new Map<string, string>();
+  for (const t of tabs) {
+    const n = (counts.get(t.agent) ?? 0) + 1;
+    counts.set(t.agent, n);
+    out.set(t.id, `${t.agent} ${n}`);
+  }
+  return out;
+}
+
 export function Tabs({
   tabs,
   activeId,
@@ -36,30 +50,48 @@ export function Tabs({
   showSplit,
   projectDir,
 }: Props) {
+  const titles = deriveTitles(tabs);
   return (
     <div className="tabs">
       <div className="tabs-list">
-        {tabs.map((t) => (
-          <div key={t.id} className={'tab' + (t.id === activeId ? ' active' : '')}>
-            <button
-              className="tab-label"
-              onClick={() => onSelect(t.id)}
-              title={t.title}
+        {tabs.map((t) => {
+          const title = titles.get(t.id) ?? t.agent;
+          return (
+            <div
+              key={t.id}
+              className={
+                'tab' +
+                (t.id === activeId ? ' active' : '') +
+                (t.attached && t.id !== activeId ? ' tab-attached-elsewhere' : '')
+              }
+              title={
+                t.attached && t.id !== activeId
+                  ? `${title} — in use on another device`
+                  : title
+              }
             >
-              {t.title}
-            </button>
-            <button
-              className="tab-close"
-              title="Close tab"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(t.id);
-              }}
-            >
-              ×
-            </button>
-          </div>
-        ))}
+              <button
+                className="tab-label"
+                onClick={() => onSelect(t.id)}
+              >
+                {title}
+                {t.attached && t.id !== activeId && (
+                  <span className="tab-attached-dot" aria-hidden="true" />
+                )}
+              </button>
+              <button
+                className="tab-close"
+                title="Close tab"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(t.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
         <button className="tab-new" onClick={onNew} title="New tab">
           +
         </button>

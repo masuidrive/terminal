@@ -1,3 +1,14 @@
+// Top-level app shell.
+//
+// The tab strip is a direct projection of the server's session list:
+// /api/sessions on mount + WS-broadcast updates from any attached
+// session. Each device thus sees the same tabs in the same order, and
+// changes (create / close / agent exit) propagate live to every viewer.
+//
+// Per-device state still in localStorage: which tab is focused, and
+// the split/term/artifacts view mode. Both are UI preferences — there's
+// no reason a phone and a laptop need to look at the same tab.
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import {
@@ -11,155 +22,72 @@ import { TerminalView } from './components/Terminal.tsx';
 import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
 import { KeyboardToolbar } from './components/KeyboardToolbar.tsx';
 import { AgentModal } from './components/AgentModal.tsx';
-import { useSession, SESSION_KEY_PREFIX } from './hooks/useSession.ts';
+import { useSession } from './hooks/useSession.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import { useSoftKeyboard } from './hooks/useSoftKeyboard.ts';
-import type { AgentKind, SessionSummary, TabState } from './types.ts';
+import type { AgentKind, SessionSummary } from './types.ts';
 
-const TABS_KEY = 'ticket-web:tabs';
-const ACTIVE_KEY = 'ticket-web:activeTabId';
+const ACTIVE_KEY = 'ticket-web:activeSessionId';
 const VIEW_KEY = 'ticket-web:view';
 
 type ViewMode = 'split' | 'term' | 'artifacts';
 
-// `crypto.randomUUID()` requires a secure context (HTTPS or localhost),
-// which excludes the LAN-IP / hostname use case we care about. Fall back
-// to a hand-rolled v4 UUID using getRandomValues — that one IS available
-// in non-secure contexts on all modern browsers.
-function uuid(): string {
-  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
-  if (c?.randomUUID) {
-    try { return c.randomUUID(); } catch { /* fall through */ }
-  }
-  const bytes = new Uint8Array(16);
-  (globalThis.crypto ?? { getRandomValues: (a: Uint8Array) => {
-    for (let i = 0; i < a.length; i++) a[i] = (Math.random() * 256) | 0;
-    return a;
-  } }).getRandomValues(bytes);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex: string[] = [];
-  for (let i = 0; i < 16; i++) hex.push(bytes[i]!.toString(16).padStart(2, '0'));
-  return (
-    hex.slice(0, 4).join('') + '-' +
-    hex.slice(4, 6).join('') + '-' +
-    hex.slice(6, 8).join('') + '-' +
-    hex.slice(8, 10).join('') + '-' +
-    hex.slice(10, 16).join('')
-  );
+function readSavedActive(): string | null {
+  try { return localStorage.getItem(ACTIVE_KEY); } catch { return null; }
 }
-
-function newTab(idx: number): TabState {
-  // Neutral until the agent modal resolves; the first word is then
-  // swapped for the chosen agent's name (e.g. "session 2" -> "codex 2").
-  return { id: uuid(), title: `session ${idx}` };
-}
-
-function loadTabs(): { tabs: TabState[]; activeId: string; fresh: boolean } {
+function writeSavedActive(id: string | null) {
   try {
-    const raw = localStorage.getItem(TABS_KEY);
-    if (raw) {
-      const tabs = JSON.parse(raw) as TabState[];
-      if (Array.isArray(tabs) && tabs.length > 0) {
-        const savedActive = localStorage.getItem(ACTIVE_KEY);
-        const activeId =
-          savedActive && tabs.some((t) => t.id === savedActive)
-            ? savedActive
-            : tabs[0]!.id;
-        return { tabs, activeId, fresh: false };
-      }
-    }
-  } catch {
-    /* fallthrough */
-  }
-  const t = newTab(1);
-  return { tabs: [t], activeId: t.id, fresh: true };
+    if (id) localStorage.setItem(ACTIVE_KEY, id);
+    else localStorage.removeItem(ACTIVE_KEY);
+  } catch { /* ignore */ }
 }
 
 export function App() {
-  const initial = loadTabs();
-  const [tabs, setTabs] = useState<TabState[]>(initial.tabs);
-  const [activeId, setActiveId] = useState<string>(initial.activeId);
-  const [counter, setCounter] = useState(initial.tabs.length + 1);
-  // Whether this load started from a brand-new tab (vs restored tabs) —
-  // captured once at mount, so a CLI-specified initial agent applies only
-  // to a genuinely fresh first window.
-  const initialFreshRef = useRef(initial.fresh);
-
-  // Per-tab sendInput, kept here so a window-level file drop can paste
-  // the uploaded path into whichever tab is active. TabPanels register
-  // and unregister themselves on mount/unmount.
-  const [sendInputs] = useState(() => new Map<string, (data: string) => void>());
+  // Tabs are SessionSummary objects, sorted by createdAt so the order
+  // is stable across devices.
+  const [tabs, setTabs] = useState<SessionSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [tabsLoaded, setTabsLoaded] = useState(false);
 
   const isNarrow = useMediaQuery('(max-width: 1023px)');
-  // The soft-keyboard toolbar is shown only while the on-screen keyboard
-  // is actually up — a keyboard being open already implies a touch device.
   const keyboardOpen = useSoftKeyboard();
 
-  // PROJECT_DIR and the installed agents are process-wide on the server, so
-  // a single fetch on mount is enough. `availableAgents` stays null until
-  // the fetch resolves so the agent picker doesn't flash the wrong state.
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [availableAgents, setAvailableAgents] = useState<AgentKind[] | null>(null);
+  // Explicit "+" or auto-shown when there are no tabs yet.
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Bootstrap: pull project info AND the initial tab list. Active tab
+  // restores from localStorage if it's still in the list; otherwise we
+  // fall back to the first tab.
   useEffect(() => {
     let aborted = false;
-    fetch('/api/info')
-      .then((r) => r.json())
-      .then(
-        (d: {
-          projectDir?: string;
-          agents?: AgentKind[];
-          initialAgent?: AgentKind | null;
-        }) => {
-          if (aborted) return;
-          if (typeof d.projectDir === 'string') setProjectDir(d.projectDir);
-          // Apply a CLI-specified initial agent to the fresh first window
-          // before revealing the picker, so the modal never flashes. Both
-          // setStates here batch into one render with the tab agent set.
-          if (
-            (d.initialAgent === 'claude' || d.initialAgent === 'codex') &&
-            initialFreshRef.current
-          ) {
-            handleChooseAgent(activeId, d.initialAgent);
-          }
-          setAvailableAgents(Array.isArray(d.agents) ? d.agents : ['claude', 'codex']);
-        },
-      )
-      .catch(() => {
-        // /api/info unreachable — fall back to offering both in the modal.
-        if (!aborted) setAvailableAgents(['claude', 'codex']);
-      });
+    Promise.all([
+      fetch('/api/info').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/sessions').then((r) => r.json()).catch(() => ({ sessions: [] })),
+    ]).then(([info, list]) => {
+      if (aborted) return;
+      const d = info as { projectDir?: string; agents?: AgentKind[] };
+      const s = list as { sessions?: SessionSummary[] };
+      if (typeof d.projectDir === 'string') setProjectDir(d.projectDir);
+      setAvailableAgents(Array.isArray(d.agents) ? d.agents : ['claude', 'codex']);
+      const sorted = sortTabs(s.sessions ?? []);
+      setTabs(sorted);
+      const saved = readSavedActive();
+      const fallback = sorted[0]?.id ?? null;
+      setActiveId(saved && sorted.some((t) => t.id === saved) ? saved : fallback);
+      setTabsLoaded(true);
+    });
     return () => { aborted = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Guard against losing the running session to an accidental back-swipe
-  // or tab close — the browser shows its native "leave site?" prompt.
-  // Only arm the prompt while at least one tab has a stored server-side
-  // session: an empty just-opened app has nothing worth confirming, and
-  // surprising the user with a "leave?" dialog there is just noise.
+  // Persist the active tab id per device (NOT the tabs themselves —
+  // those come from the server now).
   useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      let hasLiveTab = false;
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith(SESSION_KEY_PREFIX)) {
-            hasLiveTab = true;
-            break;
-          }
-        }
-      } catch {
-        /* ignore — fall through without prompt */
-      }
-      if (!hasLiveTab) return;
-      e.preventDefault();
-      e.returnValue = '';
-    };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, []);
+    if (tabsLoaded) writeSavedActive(activeId);
+  }, [activeId, tabsLoaded]);
 
+  // View mode persists per device too.
   const [view, setView] = useState<ViewMode>(() => {
     const saved = (localStorage.getItem(VIEW_KEY) as ViewMode | null) ?? 'split';
     return saved === 'split' || saved === 'term' || saved === 'artifacts' ? saved : 'split';
@@ -171,130 +99,112 @@ export function App() {
     if (isNarrow && view === 'split') setView('term');
   }, [isNarrow, view]);
 
+  // Live tab-list updates from any attached WS. Server is authoritative,
+  // so we just replace the local list. activeId stays put when valid;
+  // otherwise we re-anchor to the first tab.
+  const handleSessionsBroadcast = useCallback((list: SessionSummary[]) => {
+    const sorted = sortTabs(list);
+    setTabs(sorted);
+    setActiveId((prev) => {
+      if (prev && sorted.some((t) => t.id === prev)) return prev;
+      return sorted[0]?.id ?? null;
+    });
+  }, []);
+
+  // Auto-open the agent picker when there are no tabs (e.g. brand-new
+  // server, or every session was closed). Don't pop it while we're
+  // still loading the initial list.
   useEffect(() => {
-    try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)); } catch { /* ignore */ }
-  }, [tabs]);
+    if (!tabsLoaded) return;
+    if (tabs.length === 0 && availableAgents != null && availableAgents.length > 0) {
+      setPickerOpen(true);
+    }
+  }, [tabsLoaded, tabs.length, availableAgents]);
+
+  // beforeunload prompt only while there's something worth keeping.
   useEffect(() => {
-    try { localStorage.setItem(ACTIVE_KEY, activeId); } catch { /* ignore */ }
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (tabs.length === 0) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [tabs.length]);
+
+  // Mount each tab's TabPanel once it's been selected. We keep mounted
+  // ones around so switching back is instant; new tabs are mounted
+  // lazily on first focus.
+  const [mounted, setMounted] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (activeId) {
+      setMounted((prev) => {
+        if (prev.has(activeId)) return prev;
+        const next = new Set(prev);
+        next.add(activeId);
+        return next;
+      });
+    }
   }, [activeId]);
 
-  const [mounted, setMounted] = useState<Set<string>>(() => new Set([initial.activeId]));
-  function ensureMounted(id: string) {
-    setMounted((prev) => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
-  }
-
   function handleSelect(id: string) {
-    ensureMounted(id);
     setActiveId(id);
   }
 
   function handleNew() {
-    const t = newTab(counter);
-    setCounter((c) => c + 1);
-    setTabs((prev) => [...prev, t]);
-    ensureMounted(t.id);
-    setActiveId(t.id);
+    setPickerOpen(true);
   }
 
-  function handleClose(id: string) {
-    let storedSession: string | null = null;
+  async function handlePickAgent(agent: AgentKind) {
+    setPickerOpen(false);
     try {
-      storedSession = localStorage.getItem(SESSION_KEY_PREFIX + id);
-      localStorage.removeItem(SESSION_KEY_PREFIX + id);
-    } catch {
-      /* ignore */
-    }
-    if (storedSession) {
-      fetch(`/api/sessions/${encodeURIComponent(storedSession)}`, {
-        method: 'DELETE',
-        keepalive: true,
-      }).catch(() => undefined);
-    }
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.id === id);
-      if (idx === -1) return prev;
-      const next = prev.filter((t) => t.id !== id);
-      if (next.length === 0) {
-        const fresh = newTab(counter);
-        setCounter((c) => c + 1);
-        setActiveId(fresh.id);
-        ensureMounted(fresh.id);
-        return [fresh];
+      const r = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent }),
+      });
+      if (!r.ok) {
+        console.error('[create] failed:', r.status);
+        return;
       }
-      if (id === activeId) {
-        const neighbor = next[Math.max(0, idx - 1)]!;
-        setActiveId(neighbor.id);
-        ensureMounted(neighbor.id);
-      }
-      return next;
-    });
+      const created = (await r.json()) as SessionSummary;
+      // Optimistic add — the broadcast will arrive too, but updating
+      // here means activeId can flip immediately without waiting.
+      setTabs((prev) =>
+        prev.some((t) => t.id === created.id) ? prev : sortTabs([...prev, created]),
+      );
+      setActiveId(created.id);
+    } catch (err) {
+      console.error('[create] error:', err);
+    }
+  }
+
+  async function handleClose(id: string) {
+    // Optimistic UI: remove now, then DELETE on the server. Broadcast
+    // will confirm and update everyone else.
+    setTabs((prev) => prev.filter((t) => t.id !== id));
+    setActiveId((prev) => (prev === id ? null : prev));
     setMounted((prev) => {
+      if (!prev.has(id)) return prev;
       const next = new Set(prev);
       next.delete(id);
       return next;
     });
-  }
-
-  function handleChooseAgent(id: string, agent: AgentKind) {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? { ...t, agent, title: t.title.replace(/^\S+/, agent) }
-          : t
-      )
-    );
-  }
-
-  // Server-side sessions the user can take over (possibly started from
-  // another device). null until first fetch resolves; empty array if no
-  // sessions are resumable. Refreshed each time an AgentModal opens.
-  const [resumable, setResumable] = useState<SessionSummary[] | null>(null);
-  const refreshResumable = useCallback(async () => {
     try {
-      const r = await fetch('/api/sessions');
-      if (!r.ok) { setResumable([]); return; }
-      const d = (await r.json()) as { sessions?: SessionSummary[] };
-      // Hide sessions already owned by some other tab in THIS browser
-      // — only sessions from another device (or the same device after
-      // closing the tab without DELETEing) should be offered.
-      const owned = new Set<string>();
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (!k || !k.startsWith(SESSION_KEY_PREFIX)) continue;
-          const v = localStorage.getItem(k);
-          if (v) owned.add(v);
-        }
-      } catch { /* ignore */ }
-      setResumable((d.sessions ?? []).filter((s) => !owned.has(s.id)));
+      await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        keepalive: true,
+      });
     } catch {
-      setResumable([]);
+      /* server-side broadcast will reconcile if delete fails */
     }
-  }, []);
-  useEffect(() => { void refreshResumable(); }, [refreshResumable]);
-
-  // Picking a resumable session: write its id into the tab's localStorage
-  // slot BEFORE flipping the agent — useSession's connect-effect reads
-  // localStorage fresh on each re-run, so the flag flip then takes the
-  // resume path with the right ?session=… query.
-  function handleResume(tabId: string, s: SessionSummary) {
-    try { localStorage.setItem(SESSION_KEY_PREFIX + tabId, s.id); } catch { /* ignore */ }
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId
-          ? { ...t, agent: s.agent, title: t.title.replace(/^\S+/, s.agent) }
-          : t
-      )
-    );
   }
 
-  // Window-level file drop: upload to the shared artifacts dir, paste the
-  // resulting path into the active tab's terminal.
+  // Per-tab sendInput, kept here so a window-level file drop can paste
+  // the uploaded path into whichever tab is active.
+  const [sendInputs] = useState(() => new Map<string, (data: string) => void>());
+
+  // File drop overlay state.
   const [dragOver, setDragOver] = useState(false);
   const dragDepthRef = useRef(0);
 
@@ -320,7 +230,7 @@ export function App() {
     dragDepthRef.current = 0;
     setDragOver(false);
     const files = Array.from(e.dataTransfer.files);
-    if (files.length === 0) return;
+    if (files.length === 0 || activeId == null) return;
     const send = sendInputs.get(activeId);
     void uploadAndInsert(files, send);
   }
@@ -350,26 +260,32 @@ export function App() {
           .map((t) => (
             <TabPanel
               key={t.id}
-              tabId={t.id}
+              session={t}
               active={t.id === activeId}
               view={view}
               keyboardOpen={keyboardOpen}
-              agent={t.agent ?? null}
-              availableAgents={availableAgents}
-              resumable={resumable}
-              onRefreshResumable={refreshResumable}
               sendInputs={sendInputs}
-              onChooseAgent={(a) => handleChooseAgent(t.id, a)}
-              onResume={(s) => handleResume(t.id, s)}
+              onSessions={handleSessionsBroadcast}
               onExit={() => handleClose(t.id)}
             />
           ))}
       </div>
+      {pickerOpen && (
+        <AgentModal
+          agents={availableAgents ?? []}
+          onPick={handlePickAgent}
+          onCancel={() => setPickerOpen(false)}
+        />
+      )}
       {dragOver && (
         <div className="app-drop-overlay">Drop to upload to artifacts</div>
       )}
     </div>
   );
+}
+
+function sortTabs(list: SessionSummary[]): SessionSummary[] {
+  return [...list].sort((a, b) => a.createdAt - b.createdAt);
 }
 
 function hasFiles(dt: DataTransfer | null): boolean {
@@ -403,77 +319,33 @@ async function uploadAndInsert(
 // lose the rendered buffer. Instead, view changes flip a CSS class that
 // controls grid column sizing and visibility of the resize handle.
 function TabPanel({
-  tabId,
+  session: tab,
   active,
   view,
   keyboardOpen,
-  agent,
-  availableAgents,
-  resumable,
-  onRefreshResumable,
   sendInputs,
-  onChooseAgent,
-  onResume,
+  onSessions,
   onExit,
 }: {
-  tabId: string;
+  session: SessionSummary;
   active: boolean;
   view: ViewMode;
   keyboardOpen: boolean;
-  agent: AgentKind | null;
-  availableAgents: AgentKind[] | null;
-  resumable: SessionSummary[] | null;
-  onRefreshResumable: () => void;
   sendInputs: Map<string, (data: string) => void>;
-  onChooseAgent: (agent: AgentKind) => void;
-  onResume: (s: SessionSummary) => void;
+  onSessions: (list: SessionSummary[]) => void;
   onExit: () => void;
 }) {
-  const session = useSession(tabId, true, agent, onExit);
+  const session = useSession(tab.id, true, onSessions, onExit);
   // Register this tab's sendInput so a window-level file drop can target it.
   useEffect(() => {
-    sendInputs.set(tabId, session.sendInput);
-    return () => { sendInputs.delete(tabId); };
-  }, [tabId, session.sendInput, sendInputs]);
-  // A fresh tab with no agent and no server session yet needs one chosen.
-  const needsAgent = agent == null && session.sessionId == null;
-  // Refresh the resumable list each time the picker is about to show, so
-  // sessions started while this client was idle become visible without a
-  // page reload. The list is also fetched on App mount for the initial case.
-  useEffect(() => {
-    if (needsAgent) onRefreshResumable();
-  }, [needsAgent, onRefreshResumable]);
-  // With exactly one agent installed AND nothing to resume, skip the
-  // modal and pick the lone agent directly. Wait for resumable to
-  // RESOLVE (not just be present) — auto-picking before the fetch
-  // returns would race past a session the user wanted to resume.
-  useEffect(() => {
-    if (
-      needsAgent &&
-      availableAgents != null &&
-      availableAgents.length === 1 &&
-      resumable !== null &&
-      resumable.length === 0
-    ) {
-      onChooseAgent(availableAgents[0]!);
-    }
-  }, [needsAgent, availableAgents, resumable, onChooseAgent]);
-  // Modal when there's a real choice OR while the resume list is still
-  // loading (in which case we show a placeholder so the user doesn't
-  // race past a session that's about to appear). Hidden only when we
-  // KNOW the only path forward is the single lone agent.
-  const showAgentModal =
-    needsAgent &&
-    availableAgents != null &&
-    !(availableAgents.length === 1 && resumable !== null && resumable.length === 0);
-  // Surface WS state so debugging "blank screen" cases doesn't need
-  // DevTools — a banner appears when we're disconnected.
-  const showStatus = !needsAgent && !session.connected;
+    sendInputs.set(tab.id, session.sendInput);
+    return () => { sendInputs.delete(tab.id); };
+  }, [tab.id, session.sendInput, sendInputs]);
+
+  const showStatus = !session.connected && !session.kicked;
   const termPanelRef = useRef<ImperativePanelHandle>(null);
   const artPanelRef = useRef<ImperativePanelHandle>(null);
 
-  // Drive panel sizes from the current view. minSize=0 + collapsible lets
-  // a pane shrink to nothing without unmounting.
   useEffect(() => {
     const term = termPanelRef.current;
     const art = artPanelRef.current;
@@ -487,8 +359,6 @@ function TabPanel({
     }
   }, [view]);
 
-  // Soft-keyboard toolbar: only while the keyboard is up and the terminal
-  // pane is visible.
   const showToolbar = keyboardOpen && view !== 'artifacts';
 
   return (
@@ -500,7 +370,7 @@ function TabPanel({
         display: active ? 'flex' : 'none',
         flexDirection: 'column',
       }}
-      data-tab-id={tabId}
+      data-tab-id={tab.id}
     >
       {session.kicked ? (
         <div className="status-banner status-banner-kicked">
@@ -516,17 +386,13 @@ function TabPanel({
         </div>
       ) : showStatus ? (
         <div className="status-banner">
-          {session.sessionId
-            ? `Reconnecting to session ${session.sessionId.slice(0, 8)}…`
-            : 'Connecting to server…'}
+          {`Reconnecting to session ${tab.id.slice(0, 8)}…`}
         </div>
       ) : null}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <PanelGroup
           direction="horizontal"
-          autoSaveId={`ticket-web:${tabId}`}
-          // Without this, react-resizable-panels keeps complaining about
-          // server/client size mismatches when we drive sizes imperatively.
+          autoSaveId={`ticket-web:${tab.id}`}
           storage={memoryStorage}
         >
           <Panel
@@ -555,14 +421,6 @@ function TabPanel({
         </PanelGroup>
       </div>
       {showToolbar && <KeyboardToolbar session={session} />}
-      {showAgentModal && (
-        <AgentModal
-          agents={availableAgents ?? []}
-          resumable={resumable}
-          onPick={onChooseAgent}
-          onResume={onResume}
-        />
-      )}
     </div>
   );
 }

@@ -395,6 +395,39 @@ button:hover { background: var(--bg-elev-2); }
   font-style: italic;
 }
 
+/* Cancel button on the agent picker — only shown when we have something
+   to fall back to (tabs.length > 0). */
+.agent-modal-cancel {
+  margin-top: 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  width: 100%;
+}
+.agent-modal-cancel:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg);
+}
+
+/* Tab strip: indicator dot next to a tab that's currently in use by
+   another device. Tells the user "if you click this you'll take over". */
+.tab-attached-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #ff7a46;
+  vertical-align: middle;
+}
+.tab-attached-elsewhere .tab-label {
+  color: var(--fg-dim);
+}
+
 /* (Narrow-viewport tweaks moved to end-of-file so source order wins
    over the base .artifacts-body rule that follows.) */
 

@@ -1,12 +1,15 @@
-// One useSession() per tab. Manages WS lifecycle (with auto-reconnect),
-// PTY data callbacks, and the live artifacts list. Each tab persists its
-// server-side session id in localStorage so that page reloads — and
-// transient WS drops — reattach to the same PTY instead of starting fresh.
+// One useSession() per tab. Owns the WS lifecycle for a single
+// server-side session (UUID passed in), forwards PTY data through the
+// onPtyData fan-out, and surfaces session-list broadcasts to the
+// parent so the tab strip can update on every device at once.
+//
+// Sessions live on the server — this hook never persists anything to
+// localStorage. The tab strip restores itself from /api/sessions on
+// page load, so there's nothing for the client to remember.
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { AgentKind, ArtifactFile, ClientMessage, ServerMessage } from '../types.ts';
+import type { ArtifactFile, ClientMessage, ServerMessage, SessionSummary } from '../types.ts';
 
-export const SESSION_KEY_PREFIX = 'ticket-web:tab:';
 const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000] as const;
 // Force-close a socket that never reaches OPEN within this window — a
 // half-dead network can leave one stuck in CONNECTING indefinitely,
@@ -14,48 +17,25 @@ const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000] as const;
 const OPEN_TIMEOUT_MS = 10_000;
 
 export interface SessionApi {
-  sessionId: string | null;
+  /** Server-issued session UUID — same value as the prop, restated for
+   *  convenience so components don't need to thread it separately. */
+  sessionId: string;
   /** Absolute path of this session's artifacts directory on the server's
    *  filesystem. Used by the UI for the "copy absolute path" button. */
   artifactsDir: string | null;
   artifacts: ArtifactFile[];
   connected: boolean;
   /** True after the server bounced us with code 4000 — i.e. another
-   *  device picked up this same session and the server only allows one
-   *  attached viewer at a time. We stop reconnecting so we don't fight
-   *  the new viewer; the UI surfaces this with a "reload to reclaim"
-   *  banner. Reset on next successful open. */
+   *  device picked up this same session. Reset on next successful open. */
   kicked: boolean;
   onPtyData: (cb: (data: string) => void) => () => void;
   sendInput: (data: string) => void;
   sendResize: (cols: number, rows: number) => void;
-  /** Whether the soft-keyboard Ctrl modifier is armed for the next key. */
   ctrlArmed: boolean;
-  /** Toggle the armed Ctrl modifier. While armed, the next sendInput
-   *  folds its leading character into an ASCII control code (regardless
-   *  of whether it came from the toolbar or the OS keyboard), then
-   *  disarms. */
   toggleCtrl: () => void;
 }
 
-function readStoredSession(tabId: string): string | null {
-  try {
-    return localStorage.getItem(SESSION_KEY_PREFIX + tabId);
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredSession(tabId: string, sessionId: string | null) {
-  try {
-    if (sessionId) localStorage.setItem(SESSION_KEY_PREFIX + tabId, sessionId);
-    else localStorage.removeItem(SESSION_KEY_PREFIX + tabId);
-  } catch {
-    /* ignore quota / disabled storage */
-  }
-}
-
-function wsUrlForSession(sessionId: string | null, agent: AgentKind | null): string {
+function wsUrlForSession(sessionId: string): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const backendPort = import.meta.env.VITE_BACKEND_PORT ?? '4567';
   // Talk to the backend directly in dev (bypass Vite's WS proxy, which
@@ -63,28 +43,22 @@ function wsUrlForSession(sessionId: string | null, agent: AgentKind | null): str
   const host = import.meta.env.DEV
     ? `${window.location.hostname}:${backendPort}`
     : window.location.host;
-  // Reattach by session id when we have one. Always send the agent too:
-  // if the session is gone server-side (e.g. the server restarted) the
-  // replacement must be spawned with the tab's chosen agent, not the
-  // server default — otherwise a codex tab comes back as claude.
-  const params = new URLSearchParams();
-  if (sessionId) params.set('session', sessionId);
-  if (agent) params.set('agent', agent);
-  const qs = params.toString();
-  return `${proto}://${host}/ws${qs ? `?${qs}` : ''}`;
+  return `${proto}://${host}/ws?session=${encodeURIComponent(sessionId)}`;
 }
 
 export function useSession(
-  tabId: string,
+  sessionId: string,
   active: boolean,
-  agent: AgentKind | null,
+  onSessions: (list: SessionSummary[]) => void,
   onExit: () => void,
 ): SessionApi {
   const wsRef = useRef<WebSocket | null>(null);
-  // Kept in a ref so the stable ws.onmessage closure always sees the
-  // latest callback without re-running the connection effect.
+  // Stashed in refs so the stable ws.onmessage closures see the latest
+  // callbacks without re-running the connection effect.
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onSessionsRef = useRef(onSessions);
+  onSessionsRef.current = onSessions;
   /** Queue of stringified messages pending an OPEN socket. Drained on
    *  ws.onopen so that early sends (initial resize fired during xterm
    *  layout) never get silently dropped. */
@@ -94,7 +68,6 @@ export function useSession(
   const reconnectAttemptsRef = useRef(0);
   const closedByUserRef = useRef(false);
 
-  const [sessionId, setSessionId] = useState<string | null>(() => readStoredSession(tabId));
   const [artifactsDir, setArtifactsDir] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
   const [connected, setConnected] = useState(false);
@@ -124,9 +97,6 @@ export function useSession(
 
   useEffect(() => {
     if (!active) return;
-    // A brand-new tab has neither a stored session nor an agent yet — wait
-    // for the startup modal to pick one before opening a socket.
-    if (!readStoredSession(tabId) && !agent) return;
 
     closedByUserRef.current = false;
     let openTimer: ReturnType<typeof setTimeout> | null = null;
@@ -156,8 +126,7 @@ export function useSession(
         try { prev.close(); } catch { /* ignore */ }
       }
 
-      const id = readStoredSession(tabId);
-      const ws = new WebSocket(wsUrlForSession(id, agent));
+      const ws = new WebSocket(wsUrlForSession(sessionId));
       wsRef.current = ws;
 
       // Guard against a socket stuck in CONNECTING forever (neither onopen
@@ -179,11 +148,7 @@ export function useSession(
         const q = sendQueueRef.current;
         sendQueueRef.current = [];
         for (const m of q) {
-          try {
-            ws.send(m);
-          } catch {
-            /* ignore */
-          }
+          try { ws.send(m); } catch { /* ignore */ }
         }
       };
 
@@ -196,9 +161,7 @@ export function useSession(
         }
         switch (msg.ch) {
           case 'hello':
-            setSessionId(msg.sessionId);
             setArtifactsDir(msg.artifactsDir);
-            writeStoredSession(tabId, msg.sessionId);
             break;
           case 'pty':
             for (const cb of ptyListenersRef.current) cb(msg.data);
@@ -213,10 +176,13 @@ export function useSession(
               setArtifacts((prev) => mergeFile(prev, msg.file));
             }
             break;
+          case 'sessions':
+            onSessionsRef.current(msg.sessions);
+            break;
           case 'pty-exit':
-            // The agent process is gone — drop the persisted session and
-            // close the tab instead of respawning.
-            writeStoredSession(tabId, null);
+            // The agent process is gone — close the tab. The server has
+            // already deleted the session and will broadcast a sessions
+            // update with this id removed.
             onExitRef.current();
             break;
           case 'error':
@@ -227,19 +193,28 @@ export function useSession(
 
       ws.onclose = (ev) => {
         clearOpenTimer();
-        // Ignore a superseded socket's late close (connect() nulls the
-        // handlers, but guard anyway).
+        // Ignore a superseded socket's late close.
         if (wsRef.current !== ws) return;
         setConnected(false);
         wsRef.current = null;
         if (closedByUserRef.current) return;
-        // Code 4000 means the server kicked us off because a newer
-        // connection replaced us — don't fight it. Flag the UI so it
-        // can show "another device took over; reload to reclaim".
-        if (ev.code === 4000) {
-          setKicked(true);
+
+        // Our own 4xxx close codes never retry:
+        //   4000 — replaced by a newer connection on another device
+        //   4001 — session destroyed (DELETE'd) on the server
+        //   4002 — session not found (no longer exists)
+        //   4003 — bad request (missing ?session=)
+        if (ev.code >= 4000 && ev.code < 4100) {
+          if (ev.code === 4000) {
+            setKicked(true);
+          } else {
+            // Session is gone for good — tell the parent so the tab can
+            // be removed from the strip.
+            onExitRef.current();
+          }
           return;
         }
+
         const attempt = reconnectAttemptsRef.current++;
         const delay = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
         clearReconnectTimer();
@@ -282,25 +257,17 @@ export function useSession(
       wsRef.current = null;
       if (ws) {
         ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
-        try {
-          ws.close();
-        } catch {
-          /* ignore */
-        }
+        try { ws.close(); } catch { /* ignore */ }
       }
       ptyListenersRef.current.clear();
       sendQueueRef.current = [];
     };
-  }, [active, tabId, agent]);
+  }, [active, sessionId]);
 
   const sendInput = useCallback(
     (data: string) => {
       let out = data;
       if (ctrlArmedRef.current && data.length > 0) {
-        // Armed Ctrl: fold the leading character into its ASCII control
-        // code (e.g. 'c' -> 0x03), then disarm. Only the first char of
-        // the chunk is modified — if the OS keyboard delivers several
-        // chars at once (autocomplete / paste), Ctrl lands on the lead.
         out = String.fromCharCode(data.charCodeAt(0) & 0x1f) + data.slice(1);
         ctrlArmedRef.current = false;
         setCtrlArmed(false);

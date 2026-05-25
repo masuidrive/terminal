@@ -22,7 +22,13 @@ import { WebSocketServer, WebSocket } from 'ws';
 import chokidar from 'chokidar';
 import * as pty from 'node-pty';
 
-import type { ServerMessage, ClientMessage, ArtifactFile, AgentKind } from '../shared/protocol.ts';
+import type {
+  ServerMessage,
+  ClientMessage,
+  ArtifactFile,
+  AgentKind,
+  SessionSummary,
+} from '../shared/protocol.ts';
 import { buildSystemPrompt } from './system-prompt.ts';
 
 const BASE_PORT = Number(process.env.SERVER_PORT ?? 4567);
@@ -339,7 +345,6 @@ app.get('/api/info', (_req, res) => {
   res.json({
     projectDir: PROJECT_DIR,
     agents: AVAILABLE_AGENTS,
-    initialAgent: INITIAL_AGENT,
   });
 });
 
@@ -413,22 +418,63 @@ app.delete('/api/artifacts', async (req, res) => {
   }
 });
 
-// Used by the Resume picker on a fresh device: lists live sessions so
-// the user can pick one to take over (last-attach-wins kicks any prior
-// viewer). Preview is the latest non-empty stripped-ANSI line — enough
-// to recognise which conversation each session is.
-app.get('/api/sessions', (_req, res) => {
-  const now = Date.now();
-  res.json({
-    sessions: [...sessions.values()].map((s) => ({
-      id: s.id,
-      agent: s.agent,
-      attached: !!s.ws,
-      idleMs: now - s.lastActivity,
-      createdAt: s.createdAt,
-      preview: previewOf(s),
-    })),
+// Snapshot of a session for the tab strip. The server is the single
+// source of truth — every connected client renders its tabs directly
+// from this shape.
+function serializeSession(s: SessionState): SessionSummary {
+  return {
+    id: s.id,
+    agent: s.agent,
+    attached: !!s.ws,
+    idleMs: Date.now() - s.lastActivity,
+    createdAt: s.createdAt,
+    preview: previewOf(s),
+  };
+}
+
+// Push the current session list to every connected viewer. Called on
+// any change that would alter the tab strip: create, delete, agent
+// exit. WS clients receiving this update their tabs in-place so a tab
+// created on device A appears on device B without any polling.
+function broadcastSessionList(): void {
+  const payload = JSON.stringify({
+    ch: 'sessions',
+    sessions: [...sessions.values()].map(serializeSession),
   });
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(payload); } catch { /* ignore */ }
+    }
+  }
+}
+
+// Polling fallback — a client without an open WS (e.g. just landed on
+// the page) bootstraps its tab list here, then keeps it in sync via
+// the broadcast above once a WS is attached.
+app.get('/api/sessions', (_req, res) => {
+  res.json({
+    sessions: [...sessions.values()].map(serializeSession),
+  });
+});
+
+// Create a new session. Replaces the old "WS auto-spawns if no
+// ?session=… matches" path: WS attaches only, this endpoint is the
+// only way to bring a session into existence.
+app.post('/api/sessions', express.json({ limit: '1kb' }), async (req, res) => {
+  const body = req.body as { agent?: unknown } | undefined;
+  const agent: AgentKind = body?.agent === 'codex' ? 'codex' : 'claude';
+  if (!AVAILABLE_AGENTS.includes(agent)) {
+    res.status(400).json({ error: `agent "${agent}" not available on this server` });
+    return;
+  }
+  try {
+    const state = await createSession(agent);
+    sessions.set(state.id, state);
+    broadcastSessionList();
+    res.json(serializeSession(state));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // Explicit teardown — called by the client when the user closes a tab.
@@ -443,6 +489,7 @@ app.delete('/api/sessions/:id', async (req, res) => {
       try { state.ws.close(4001, 'session destroyed'); } catch { /* ignore */ }
     }
     sessions.delete(state.id);
+    broadcastSessionList();
   }
   res.status(204).end();
 });
@@ -732,6 +779,7 @@ async function createSession(agent: AgentKind): Promise<SessionState> {
   ptyProc.onExit(({ exitCode, signal }) => {
     send(state, { ch: 'pty-exit', code: exitCode, signal: signal ?? null });
     sessions.delete(state.id);
+    broadcastSessionList();
   });
 
   return state;
@@ -750,6 +798,13 @@ async function attachWs(state: SessionState, ws: WebSocket) {
   state.lastActivity = Date.now();
 
   send(state, { ch: 'hello', sessionId: state.id, artifactsDir: state.artifactsDir });
+  // Seed the tab strip from this attached WS — every WS gets the full
+  // list on attach, and then receives broadcasts on each subsequent
+  // change so the strip stays current.
+  send(state, {
+    ch: 'sessions',
+    sessions: [...sessions.values()].map(serializeSession),
+  });
   if (state.recent) {
     // Replay the recent buffer so the client's xterm picks up the current
     // PTY screen state. Clear the screen and scrollback first (CSI 3J
@@ -758,6 +813,8 @@ async function attachWs(state: SessionState, ws: WebSocket) {
     send(state, { ch: 'pty', data: '\x1b[3J\x1b[2J\x1b[H' + state.recent });
   }
   send(state, { ch: 'artifacts-list', files: await listArtifacts(state.artifactsDir) });
+  // Mark this session as attached for everyone else's tab strip.
+  broadcastSessionList();
 }
 
 wss.on('connection', async (ws, req) => {
@@ -767,21 +824,19 @@ wss.on('connection', async (ws, req) => {
 
   const url = new URL(req.url ?? '/', 'http://localhost');
   const requestedId = url.searchParams.get('session');
-  const agent: AgentKind = url.searchParams.get('agent') === 'codex' ? 'codex' : 'claude';
 
-  let state: SessionState | undefined =
-    requestedId ? sessions.get(requestedId) : undefined;
+  // WS now only ATTACHES — sessions must be created via POST /api/sessions
+  // first. A missing or stale ?session=… is a hard error here, not a
+  // silent fallback to a new claude session (which used to confuse the
+  // multi-device handover flow).
+  if (!requestedId) {
+    ws.close(4003, 'missing session id');
+    return;
+  }
+  const state = sessions.get(requestedId);
   if (!state) {
-    try {
-      state = await createSession(agent);
-      sessions.set(state.id, state);
-    } catch (err) {
-      ws.send(
-        JSON.stringify({ ch: 'error', message: `failed to start session: ${(err as Error).message}` })
-      );
-      ws.close();
-      return;
-    }
+    ws.close(4002, 'session not found');
+    return;
   }
   await attachWs(state, ws);
 
@@ -815,7 +870,6 @@ wss.on('connection', async (ws, req) => {
     } catch {
       return;
     }
-    if (!state) return;
     state.lastActivity = Date.now();
     if (msg.ch === 'pty' && msg.op === 'input') {
       state.ptyProc.write(msg.data);
@@ -836,9 +890,11 @@ wss.on('connection', async (ws, req) => {
 
   ws.on('close', () => {
     clearInterval(hb);
-    // Detach only — keep the PTY alive for reattach.
-    if (state && state.ws === ws) {
+    // Detach only — keep the PTY alive for reattach. Broadcast so
+    // other clients' tab strips see the "attached" badge clear.
+    if (state.ws === ws) {
       state.ws = null;
+      broadcastSessionList();
     }
   });
 });
@@ -999,5 +1055,22 @@ httpServer.once('listening', () => {
     }
   });
 });
+
+// Seed the first session if the launcher named one. Replaces the
+// previous "client auto-picks initial agent on first fresh tab" flow:
+// with server-side tabs, the bin's INITIAL_AGENT becomes "spawn this
+// session at boot so the UI lands on it", regardless of which device
+// connects first. Failures here are non-fatal — the UI will show an
+// empty tab strip and the user can pick from the modal.
+if (INITIAL_AGENT) {
+  (async () => {
+    try {
+      const state = await createSession(INITIAL_AGENT);
+      sessions.set(state.id, state);
+    } catch (err) {
+      console.error('[init] failed to spawn initial session:', (err as Error).message);
+    }
+  })();
+}
 
 startListening(BASE_PORT, MAX_PORT_TRIES);
