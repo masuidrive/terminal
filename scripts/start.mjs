@@ -5,13 +5,14 @@
 // `prepare` lifecycle script when the package is installed.
 //
 // Usage:
-//   npx github:masuidrive/terminal           # localhost only, quiet
-//   npx github:masuidrive/terminal codex     # first window = codex (skip picker)
-//   npx github:masuidrive/terminal codex -c  # ...resuming the previous conversation
-//   npx github:masuidrive/terminal --lan     # also reachable on the LAN
-//   npx github:masuidrive/terminal --yolo    # agent skips permission prompts
-//   npx github:masuidrive/terminal --debug   # verbose logs + access log
-//   npx github:masuidrive/terminal --port 8080   # pin a port (errors if busy)
+//   npx github:masuidrive/terminal             # localhost only, quiet
+//   npx github:masuidrive/terminal codex       # first window = codex (skip picker)
+//   npx github:masuidrive/terminal codex -c    # ...resuming the previous conversation
+//   npx github:masuidrive/terminal --lan       # also reachable on the LAN (passcode protected)
+//   npx github:masuidrive/terminal --lan --passcode hunter2   # pin the passcode
+//   npx github:masuidrive/terminal --yolo      # agent skips permission prompts
+//   npx github:masuidrive/terminal --debug     # verbose logs + access log
+//   npx github:masuidrive/terminal --port 8080 # pin a port (errors if busy)
 
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,20 +27,21 @@ Usage:
   npx github:masuidrive/terminal [claude|codex] [options]
 
 Arguments:
-  claude | codex   Agent for the first window (skips the picker modal)
+  claude | codex     Agent for the first window (skips the picker modal)
 
 Options:
-  -c, --continue   Resume the previous conversation (first window only)
-  --lan            Also serve on the local network (default: localhost only)
-  --no-prefix      Don't mount under a random /<hex> path (only meaningful with --lan)
-  --yolo           Spawn the agent without permission prompts
-  --debug          Verbose logs + per-request access log
-  --port <n>       Pin a port; fails if busy. Without --port, starts at 4567 and
-                   auto-increments to the next free port
-  -h, --help       Show this help
+  -c, --continue     Resume the previous conversation (first window only)
+  --lan              Also serve on the local network (default: localhost only)
+  --passcode <code>  Pin the passcode (otherwise random per run; --lan only).
+                     Loopback connections never need a passcode.
+  --yolo             Spawn the agent without permission prompts
+  --debug            Verbose logs + per-request access log
+  --port <n>         Pin a port; fails if busy. Without --port, starts at 4567
+                     and auto-increments to the next free port
+  -h, --help         Show this help
 
 Environment:
-  SERVER_PORT  CLAUDE_BIN  CODEX_BIN  PROJECT_DIR`);
+  SERVER_PORT  CLAUDE_BIN  CODEX_BIN  PROJECT_DIR  PASSCODE`);
   process.exit(0);
 }
 
@@ -55,8 +57,12 @@ if (argv.includes('--yolo') || process.env.YOLO === '1') {
 }
 if (argv.includes('--lan')) process.env.LAN = '1';
 if (argv.includes('--debug')) process.env.DEBUG = '1';
-if (argv.includes('--no-prefix')) process.env.NO_PREFIX = '1';
 if (argv.includes('-c') || argv.includes('--continue')) process.env.CONTINUE = '1';
+
+const passcodeIdx = argv.indexOf('--passcode');
+if (passcodeIdx !== -1 && argv[passcodeIdx + 1]) {
+  process.env.PASSCODE = argv[passcodeIdx + 1];
+}
 
 // `--port N` pins a port (a busy one is then an error); with no port given
 // at all, PORT_AUTO lets the server roll forward past a busy default.

@@ -54,18 +54,22 @@ for the first window.
 npx github:masuidrive/terminal codex      # first window = codex, skip the picker
 npx github:masuidrive/terminal codex -c   # ...resuming the previous conversation
 npx github:masuidrive/terminal -c         # resume the previous conversation (first window)
-npx github:masuidrive/terminal --lan      # also reachable from other devices on the LAN
-npx github:masuidrive/terminal --no-prefix  # skip the random /<hex> path prefix (--lan only)
-npx github:masuidrive/terminal --yolo     # spawn the agent without permission prompts
-npx github:masuidrive/terminal --debug    # verbose logs + per-request access log
-npx github:masuidrive/terminal --port 8080  # pin a port (errors if it is busy)
-npx github:masuidrive/terminal --help     # full option list
+npx github:masuidrive/terminal --lan                     # also reachable from other devices on the LAN
+npx github:masuidrive/terminal --lan --passcode hunter2  # pin the passcode instead of a random one
+npx github:masuidrive/terminal --yolo                    # spawn the agent without permission prompts
+npx github:masuidrive/terminal --debug                   # verbose logs + per-request access log
+npx github:masuidrive/terminal --port 8080               # pin a port (errors if it is busy)
+npx github:masuidrive/terminal --help                    # full option list
 ```
 
-With `--lan` the server mounts everything under a random `/<8-hex>` path
-prefix as a lightweight access-control measure — only the URL printed at
-startup works. Use `--no-prefix` to disable. A `Referrer-Policy: no-referrer`
-response header prevents the prefix from leaking via outbound link clicks.
+With `--lan` the server requires a passcode for every non-loopback request.
+It prints a fresh 8-char passcode at startup (or use `--passcode <code>` to
+pin a memorable one). The browser stores the passcode in an
+`HttpOnly; SameSite=Strict` session cookie, so it isn't visible to page
+scripts and isn't sent to any other origin. A `Referrer-Policy: no-referrer`
+response header prevents URL paths from leaking via outbound link clicks.
+Loopback requests skip auth entirely, so `http://localhost:<port>/` stays
+frictionless from the same machine.
 
 A positional `claude` or `codex` sets the first window's agent and skips the
 picker modal for it; later tabs still show the picker.

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
 import type { ArtifactFile } from '../types.ts';
 import { ArtifactRenderer } from './renderers.tsx';
-import { BASE_PATH } from '../basePath.ts';
 
 interface MenuAnchor {
   file: ArtifactFile;
@@ -75,7 +74,7 @@ export function ArtifactsPanel({ sessionId, artifactsDir, artifacts }: Props) {
     (artifacts.length === 1 ? artifacts[0]! : null);
   const url =
     file && sessionId
-      ? `${BASE_PATH}/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`
+      ? `/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`
       : null;
   const absolutePath = file && artifactsDir ? `${artifactsDir}/${file.path}` : null;
 
@@ -241,7 +240,7 @@ async function copyToClipboard(text: string): Promise<void> {
 
 function downloadArtifact(sessionId: string, file: ArtifactFile): void {
   const a = document.createElement('a');
-  a.href = `${BASE_PATH}/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`;
+  a.href = `/artifacts/${sessionId}/${encodeURI(file.path)}?v=${file.mtime}`;
   a.download = basename(file.path);
   document.body.appendChild(a);
   a.click();
@@ -250,7 +249,7 @@ function downloadArtifact(sessionId: string, file: ArtifactFile): void {
 
 async function deleteArtifact(file: ArtifactFile): Promise<void> {
   try {
-    await fetch(`${BASE_PATH}/api/artifacts?name=${encodeURIComponent(file.path)}`, {
+    await fetch(`/api/artifacts?name=${encodeURIComponent(file.path)}`, {
       method: 'DELETE',
     });
   } catch (err) {

@@ -44,12 +44,50 @@ let continuePending = CONTINUE;
 // UI is reachable from a phone / other device on the same network.
 const LAN = process.env.LAN === '1';
 const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
-// When exposed beyond localhost, mount everything under a random
-// path-prefix (`/<hex>`) so a stray LAN visitor can't poke the API just
-// by knowing the port. `--no-prefix` opts out, and a localhost-only
-// server never adds one. A new prefix is generated every server run.
-const PREFIX_ENABLED = LAN && process.env.NO_PREFIX !== '1';
-const PREFIX = PREFIX_ENABLED ? '/' + randomBytes(4).toString('hex') : '';
+// When exposed beyond localhost, require a passcode on every non-loopback
+// request. The passcode lives in a session cookie (`tw-auth`); loopback
+// requests skip auth entirely so localhost stays frictionless even when
+// the server also listens on the LAN. A `--passcode <code>` (env
+// `PASSCODE`) pins the value across restarts; otherwise we generate a
+// fresh 8-char hex string each run.
+const PASSCODE = process.env.PASSCODE && process.env.PASSCODE.length > 0
+  ? process.env.PASSCODE
+  : (LAN ? randomBytes(4).toString('hex') : '');
+const AUTH_ENABLED = LAN && PASSCODE.length > 0;
+
+// Treat loopback connections as trusted: even when the server is on
+// `--lan`, hitting it from the same machine should be friction-free.
+// node's req.socket.remoteAddress prefixes IPv4 over IPv6 with ::ffff:.
+function isLoopback(remoteAddress: string | undefined): boolean {
+  return remoteAddress === '127.0.0.1' ||
+         remoteAddress === '::1' ||
+         remoteAddress === '::ffff:127.0.0.1';
+}
+
+// Tiny no-deps cookie parser — we only ever read `tw-auth`, so the
+// general-purpose `cookie-parser` package would be overkill.
+function parseCookieHeader(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const k = part.slice(0, eq).trim();
+    if (!k) continue;
+    try { out[k] = decodeURIComponent(part.slice(eq + 1).trim()); }
+    catch { /* malformed; skip */ }
+  }
+  return out;
+}
+
+// Constant-time string compare so a wrong passcode can't be cheaply
+// guessed character-by-character via timing.
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 // Whether an executable is resolvable — either an absolute path or a bare
 // name found on PATH. Used to decide which agents the picker offers.
@@ -126,15 +164,142 @@ if (DEBUG) {
 
 // `Referrer-Policy: no-referrer` so a click on an external link from
 // inside the app — including from a sandboxed HTML artifact — never
-// leaks the random prefix (or any URL path) to the destination site.
+// leaks any URL path or query to the destination site.
 app.use((_req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   next();
 });
 
+// Auth gate. When AUTH_ENABLED is on we require the `tw-auth` cookie to
+// match PASSCODE for every request EXCEPT:
+//   - Loopback callers (always trusted)
+//   - The login page and login API
+//   - /artifacts/* — these carry an unguessable per-session id in the URL
+//     and need to be reachable from a `sandbox="allow-scripts"` iframe
+//     (null origin, no cookies sent on sibling fetches).
+function authGate(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): void {
+  if (!AUTH_ENABLED) { next(); return; }
+  if (isLoopback(req.socket.remoteAddress)) { next(); return; }
+  const p = req.path;
+  if (
+    p === '/login' ||
+    p === '/api/login' ||
+    p.startsWith('/artifacts/')
+  ) {
+    next();
+    return;
+  }
+  const cookies = parseCookieHeader(req.headers.cookie);
+  if (cookies['tw-auth'] && safeEqual(cookies['tw-auth'], PASSCODE)) {
+    next();
+    return;
+  }
+  // API calls get a structured 401; navigations get bounced to /login.
+  if (p.startsWith('/api/')) {
+    res.status(401).json({ error: 'unauthorized' });
+  } else {
+    res.redirect('/login');
+  }
+}
+app.use(authGate);
+
+// Login page (inline HTML — the SPA bundle isn't reachable yet because
+// the auth middleware above would gate `index.html` first).
+const LOGIN_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>terminal — sign in</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #0a0a0c; color: #eaeaf0;
+    display: grid; place-items: center;
+  }
+  form {
+    background: #16161a; padding: 28px 28px 22px; border-radius: 12px;
+    border: 1px solid #24242a; min-width: 280px; max-width: 360px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  h1 { margin: 0 0 18px; font-size: 18px; font-weight: 600; }
+  input[type=password] {
+    background: #0a0a0c; border: 1px solid #36363c; color: #eaeaf0;
+    padding: 10px 12px; border-radius: 6px; width: 100%; box-sizing: border-box;
+    font: 15px ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 0.05em;
+  }
+  input:focus { outline: none; border-color: #4a7fff; }
+  button {
+    margin-top: 12px; background: #4a7fff; color: white; border: 0;
+    padding: 11px 16px; border-radius: 6px; font-size: 14px; font-weight: 500;
+    cursor: pointer; width: 100%;
+  }
+  button:hover { background: #6394ff; }
+  .err { color: #ff7a7a; margin-top: 10px; font-size: 13px; min-height: 1em; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="off">
+  <h1>terminal</h1>
+  <input type="password" id="p" placeholder="passcode" autofocus
+         autocomplete="current-password" inputmode="text" spellcheck="false">
+  <button type="submit">Sign in</button>
+  <div class="err" id="e"></div>
+</form>
+<script>
+  const f = document.getElementById('f');
+  const e = document.getElementById('e');
+  const p = document.getElementById('p');
+  f.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    e.textContent = '';
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode: p.value }),
+    }).catch(() => null);
+    if (r && r.ok) {
+      location.href = '/';
+    } else {
+      e.textContent = 'wrong passcode';
+      p.select();
+    }
+  });
+</script>
+</body>
+</html>`;
+
+app.get('/login', (_req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(LOGIN_HTML);
+});
+
+app.post('/api/login', express.json({ limit: '1kb' }), (req, res) => {
+  const body = req.body as { passcode?: unknown } | undefined;
+  const supplied = typeof body?.passcode === 'string' ? body.passcode : '';
+  if (!AUTH_ENABLED || !safeEqual(supplied, PASSCODE)) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  // Session cookie (no Max-Age): cleared when the browser session ends,
+  // so a shared device doesn't keep authority around indefinitely.
+  res.setHeader(
+    'Set-Cookie',
+    `tw-auth=${encodeURIComponent(PASSCODE)}; HttpOnly; SameSite=Strict; Path=/`,
+  );
+  res.status(204).end();
+});
+
 // The :sid segment is vestigial — artifacts are shared, not per-session —
 // but kept so existing client URLs (/artifacts/<sid>/<path>) still resolve.
-app.get(PREFIX + '/artifacts/:sid/*splat', async (req, res) => {
+// The sid also acts as a capability token: knowing the (random UUID) sid
+// implies you already authenticated and were handed it via the WS hello.
+app.get('/artifacts/:sid/*splat', async (req, res) => {
   const splat = (req.params as Record<string, string | string[]>).splat;
   const rel = Array.isArray(splat) ? splat.join('/') : (splat ?? '');
   const base = ARTIFACTS_DIR;
@@ -154,7 +319,7 @@ app.get(PREFIX + '/artifacts/:sid/*splat', async (req, res) => {
   res.sendFile(resolved);
 });
 
-app.get(PREFIX + '/api/info', (_req, res) => {
+app.get('/api/info', (_req, res) => {
   res.json({
     projectDir: PROJECT_DIR,
     agents: AVAILABLE_AGENTS,
@@ -172,7 +337,7 @@ const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 // filename in the query. The file lands in the shared artifacts dir,
 // auto-renamed on collision; the response gives the absolute path so the
 // client can paste it at the terminal cursor.
-app.post(PREFIX + '/api/artifacts/upload', async (req, res) => {
+app.post('/api/artifacts/upload', async (req, res) => {
   // Fast-reject when Content-Length already exceeds the cap so we don't
   // touch disk for an upload we'd only have to delete. Some clients omit
   // the header — the per-chunk counter below catches those.
@@ -213,7 +378,7 @@ app.post(PREFIX + '/api/artifacts/upload', async (req, res) => {
 // Delete an artifact by its path relative to ARTIFACTS_DIR. Subdirs are
 // allowed (artifacts can be nested) but the resolved target must stay
 // inside ARTIFACTS_DIR — `../etc/passwd` and friends are rejected.
-app.delete(PREFIX + '/api/artifacts', async (req, res) => {
+app.delete('/api/artifacts', async (req, res) => {
   const raw = String(req.query.name ?? '');
   if (!raw) {
     res.status(400).end();
@@ -232,7 +397,7 @@ app.delete(PREFIX + '/api/artifacts', async (req, res) => {
   }
 });
 
-app.get(PREFIX + '/api/sessions', (_req, res) => {
+app.get('/api/sessions', (_req, res) => {
   res.json({
     sessions: [...sessions.keys()],
     live: [...sessions.values()].map((s) => ({
@@ -245,7 +410,7 @@ app.get(PREFIX + '/api/sessions', (_req, res) => {
 
 // Explicit teardown — called by the client when the user closes a tab.
 // Idempotent; returns 204 whether or not the id was live.
-app.delete(PREFIX + '/api/sessions/:id', async (req, res) => {
+app.delete('/api/sessions/:id', async (req, res) => {
   // Concatenated route path loses Express's literal-typed params, so id
   // is widened to string | string[]; coerce.
   const state = sessions.get(String(req.params.id));
@@ -265,15 +430,26 @@ app.delete(PREFIX + '/api/sessions/:id', async (req, res) => {
 // process, so it serves the SPA on the same origin as the API.
 const CLIENT_DIR = path.join(import.meta.dirname, '..', 'dist');
 if (existsSync(CLIENT_DIR)) {
-  if (PREFIX) app.use(PREFIX, express.static(CLIENT_DIR));
-  else app.use(express.static(CLIENT_DIR));
+  app.use(express.static(CLIENT_DIR));
 }
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({
   server: httpServer,
-  path: PREFIX + '/ws',
+  path: '/ws',
   perMessageDeflate: false,
+  // Mirror the HTTP auth gate: loopback is trusted; otherwise the
+  // request must carry a valid tw-auth cookie. Returning false here
+  // makes ws reject the upgrade with a 401 before we ever take the
+  // connection — the browser sees a clean failure instead of a
+  // half-open socket.
+  verifyClient: (info, cb) => {
+    if (!AUTH_ENABLED) { cb(true); return; }
+    if (isLoopback(info.req.socket.remoteAddress)) { cb(true); return; }
+    const cookies = parseCookieHeader(info.req.headers.cookie);
+    const ok = !!cookies['tw-auth'] && safeEqual(cookies['tw-auth'], PASSCODE);
+    cb(ok, 401, 'unauthorized');
+  },
 });
 
 interface SessionState {
@@ -704,9 +880,13 @@ httpServer.once('listening', () => {
   }
   const addr = httpServer.address();
   const port = addr && typeof addr === 'object' ? addr.port : BASE_PORT;
-  const urls = [`http://localhost:${port}${PREFIX}/`];
+  const urls: { url: string; auth: boolean }[] = [
+    { url: `http://localhost:${port}/`, auth: false },
+  ];
   if (LAN) {
-    for (const ip of lanAddresses()) urls.push(`http://${ip}:${port}${PREFIX}/`);
+    for (const ip of lanAddresses()) {
+      urls.push({ url: `http://${ip}:${port}/`, auth: AUTH_ENABLED });
+    }
   }
   // Resolve the Tailscale MagicDNS name (best-effort, short timeout) so
   // the URL block can include the stable hostname alongside the raw IPs.
@@ -715,10 +895,17 @@ httpServer.once('listening', () => {
   // would race ahead of the URL list.
   const tsPromise = LAN ? tailscaleHostname() : Promise.resolve(null);
   tsPromise.then((tsName) => {
-    if (tsName) urls.push(`http://${tsName}:${port}${PREFIX}/`);
+    if (tsName) urls.push({ url: `http://${tsName}:${port}/`, auth: AUTH_ENABLED });
     console.log('\n  terminal running at:');
-    for (const u of urls) console.log(`    ${u}`);
+    for (const u of urls) console.log(`    ${u.url}`);
     console.log('');
+    if (AUTH_ENABLED) {
+      console.log(`  passcode: ${PASSCODE}    (required for non-localhost URLs)`);
+      if (!process.env.PASSCODE) {
+        console.log('  (pin a stable one with --passcode <code>)');
+      }
+      console.log('');
+    }
     console.log('  options:  [claude|codex]  -c  --lan  --yolo  --debug  --port <n>  --help');
     console.log('  port:     default 4567 — auto-increments to the next free port when --port is not set');
     console.log('');
