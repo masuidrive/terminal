@@ -146,7 +146,14 @@ function agentCommand(
 const TMP_ROOT = path.join(os.tmpdir(), 'ticket-web');
 const INSTANCE_DIR = path.join(TMP_ROOT, String(process.pid));
 const ARTIFACTS_DIR = path.join(INSTANCE_DIR, 'artifacts');
-const RECENT_BUFFER_BYTES = 256 * 1024;
+// Replay buffer: capped by lines AND bytes. The line cap controls how
+// much history a device picking up the session can see — claude/codex
+// sessions are mostly streamed text where line count maps well to
+// "amount of conversation". The byte cap is a safety net for
+// redraw-heavy TUI moments (file pickers, spinners) so a runaway
+// terminal repaint can't blow memory.
+const MAX_RECENT_LINES = 2048;
+const MAX_RECENT_BYTES = 2 * 1024 * 1024;
 const HEARTBEAT_MS = 30 * 1000;
 // Sessions live until either the server shuts down, the client explicitly
 // destroys them (DELETE /api/sessions/:id), or claude itself exits. There
@@ -397,13 +404,20 @@ app.delete('/api/artifacts', async (req, res) => {
   }
 });
 
+// Used by the Resume picker on a fresh device: lists live sessions so
+// the user can pick one to take over (last-attach-wins kicks any prior
+// viewer). Preview is the latest non-empty stripped-ANSI line — enough
+// to recognise which conversation each session is.
 app.get('/api/sessions', (_req, res) => {
+  const now = Date.now();
   res.json({
-    sessions: [...sessions.keys()],
-    live: [...sessions.values()].map((s) => ({
+    sessions: [...sessions.values()].map((s) => ({
       id: s.id,
+      agent: s.agent,
       attached: !!s.ws,
-      idleMs: Date.now() - s.lastActivity,
+      idleMs: now - s.lastActivity,
+      createdAt: s.createdAt,
+      preview: previewOf(s),
     })),
   });
 });
@@ -454,13 +468,16 @@ const wss = new WebSocketServer({
 
 interface SessionState {
   id: string;
+  agent: AgentKind;
   artifactsDir: string;
   ptyProc: pty.IPty;
   ws: WebSocket | null;
-  /** Recent PTY output, capped to RECENT_BUFFER_BYTES, used to repaint
-   *  xterm scrollback when a client reattaches. */
+  /** Recent PTY output, capped by line+byte limits, used to repaint
+   *  xterm scrollback when a client reattaches — possibly on a
+   *  different device than the one that started the session. */
   recent: string;
   lastActivity: number;
+  createdAt: number;
   /** Last size requested by a client. Used to spawn replacement PTYs at
    *  the correct dimensions (currently unused — we spawn once and resize
    *  on first client message). */
@@ -477,13 +494,33 @@ function send(target: SessionState | WebSocket, msg: ServerMessage) {
 
 function appendRecent(state: SessionState, data: string) {
   let combined = state.recent + data;
-  if (combined.length > RECENT_BUFFER_BYTES) {
-    combined = combined.slice(combined.length - RECENT_BUFFER_BYTES);
-    // Resync to the start of a line: an escape sequence never spans '\n',
-    // so starting the buffer just after one guarantees a later replay
-    // never begins mid-sequence (which would garble the output).
-    const nl = combined.indexOf('\n');
-    if (nl !== -1) combined = combined.slice(nl + 1);
+  // Enforce the byte cap first (cheap, prevents runaway repaint
+  // sessions from holding tens of MB before the line trim runs).
+  if (combined.length > MAX_RECENT_BYTES) {
+    combined = combined.slice(combined.length - MAX_RECENT_BYTES);
+  }
+  // Then enforce the line cap. We count '\n's and drop the leading
+  // chunk past the cap, then resync to the next '\n' boundary — an
+  // escape sequence never spans a newline, so starting just after one
+  // guarantees the replay never begins mid-sequence.
+  let nlCount = 0;
+  for (let i = 0; i < combined.length; i++) if (combined.charCodeAt(i) === 10) nlCount++;
+  if (nlCount > MAX_RECENT_LINES) {
+    const drop = nlCount - MAX_RECENT_LINES;
+    let dropped = 0;
+    let i = 0;
+    for (; i < combined.length && dropped < drop; i++) {
+      if (combined.charCodeAt(i) === 10) dropped++;
+    }
+    combined = combined.slice(i);
+  } else {
+    // Whether or not we hit the line cap, make sure a trimmed buffer
+    // starts cleanly: if the byte trim above split mid-line, advance
+    // to the next newline.
+    if (combined.length === MAX_RECENT_BYTES) {
+      const nl = combined.indexOf('\n');
+      if (nl !== -1) combined = combined.slice(nl + 1);
+    }
   }
   state.recent = combined;
   state.lastActivity = Date.now();
@@ -492,6 +529,37 @@ function appendRecent(state: SessionState, data: string) {
 // Strip any directory parts a browser might send (Windows paths arrive
 // with backslashes) and any control characters; reject empty / dotfile
 // edge cases.
+// Best-effort ANSI / control stripping for the /api/sessions preview.
+// Not a full xterm; just enough that the picker shows readable text.
+function stripAnsiForPreview(s: string): string {
+  return s
+    // CSI: ESC [ <params> <letter>
+    .replace(/\x1b\[[\d;?]*[a-zA-Z@]/g, '')
+    // OSC: ESC ] <data> (BEL | ESC \)
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+    // Other single-char escapes
+    .replace(/\x1b[\x40-\x5f]/g, '')
+    // Bare carriage returns inside the buffer come from TUI repaints;
+    // collapse to spaces so the preview reads forward.
+    .replace(/\r/g, ' ')
+    // Drop remaining C0 / DEL except newline & tab
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+}
+
+// Compact one-line summary of the session's recent activity for the
+// Resume picker. Last non-empty line, ANSI stripped, length capped.
+function previewOf(state: SessionState): string {
+  const plain = stripAnsiForPreview(state.recent);
+  const lines = plain.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i]!.trim();
+    if (t.length > 0) {
+      return t.length > 160 ? t.slice(0, 157) + '…' : t;
+    }
+  }
+  return '';
+}
+
 function sanitizeName(raw: string): string {
   const n = (raw.split(/[/\\]/).pop() ?? '')
     .replace(/[ -]/g, '_')
@@ -637,10 +705,12 @@ async function createSession(agent: AgentKind): Promise<SessionState> {
 
   const state: SessionState = {
     id,
+    agent,
     artifactsDir: ARTIFACTS_DIR,
     ptyProc,
     ws: null,
     recent: '',
+    createdAt: Date.now(),
     lastActivity: Date.now(),
     cols,
     rows,

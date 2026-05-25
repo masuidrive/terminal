@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import {
   Panel,
@@ -14,7 +14,7 @@ import { AgentModal } from './components/AgentModal.tsx';
 import { useSession, SESSION_KEY_PREFIX } from './hooks/useSession.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import { useSoftKeyboard } from './hooks/useSoftKeyboard.ts';
-import type { AgentKind, TabState } from './types.ts';
+import type { AgentKind, SessionSummary, TabState } from './types.ts';
 
 const TABS_KEY = 'ticket-web:tabs';
 const ACTIVE_KEY = 'ticket-web:activeTabId';
@@ -250,6 +250,49 @@ export function App() {
     );
   }
 
+  // Server-side sessions the user can take over (possibly started from
+  // another device). null until first fetch resolves; empty array if no
+  // sessions are resumable. Refreshed each time an AgentModal opens.
+  const [resumable, setResumable] = useState<SessionSummary[] | null>(null);
+  const refreshResumable = useCallback(async () => {
+    try {
+      const r = await fetch('/api/sessions');
+      if (!r.ok) { setResumable([]); return; }
+      const d = (await r.json()) as { sessions?: SessionSummary[] };
+      // Hide sessions already owned by some other tab in THIS browser
+      // — only sessions from another device (or the same device after
+      // closing the tab without DELETEing) should be offered.
+      const owned = new Set<string>();
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k || !k.startsWith(SESSION_KEY_PREFIX)) continue;
+          const v = localStorage.getItem(k);
+          if (v) owned.add(v);
+        }
+      } catch { /* ignore */ }
+      setResumable((d.sessions ?? []).filter((s) => !owned.has(s.id)));
+    } catch {
+      setResumable([]);
+    }
+  }, []);
+  useEffect(() => { void refreshResumable(); }, [refreshResumable]);
+
+  // Picking a resumable session: write its id into the tab's localStorage
+  // slot BEFORE flipping the agent — useSession's connect-effect reads
+  // localStorage fresh on each re-run, so the flag flip then takes the
+  // resume path with the right ?session=… query.
+  function handleResume(tabId: string, s: SessionSummary) {
+    try { localStorage.setItem(SESSION_KEY_PREFIX + tabId, s.id); } catch { /* ignore */ }
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === tabId
+          ? { ...t, agent: s.agent, title: t.title.replace(/^\S+/, s.agent) }
+          : t
+      )
+    );
+  }
+
   // Window-level file drop: upload to the shared artifacts dir, paste the
   // resulting path into the active tab's terminal.
   const [dragOver, setDragOver] = useState(false);
@@ -313,8 +356,11 @@ export function App() {
               keyboardOpen={keyboardOpen}
               agent={t.agent ?? null}
               availableAgents={availableAgents}
+              resumable={resumable}
+              onRefreshResumable={refreshResumable}
               sendInputs={sendInputs}
               onChooseAgent={(a) => handleChooseAgent(t.id, a)}
+              onResume={(s) => handleResume(t.id, s)}
               onExit={() => handleClose(t.id)}
             />
           ))}
@@ -363,8 +409,11 @@ function TabPanel({
   keyboardOpen,
   agent,
   availableAgents,
+  resumable,
+  onRefreshResumable,
   sendInputs,
   onChooseAgent,
+  onResume,
   onExit,
 }: {
   tabId: string;
@@ -373,8 +422,11 @@ function TabPanel({
   keyboardOpen: boolean;
   agent: AgentKind | null;
   availableAgents: AgentKind[] | null;
+  resumable: SessionSummary[] | null;
+  onRefreshResumable: () => void;
   sendInputs: Map<string, (data: string) => void>;
   onChooseAgent: (agent: AgentKind) => void;
+  onResume: (s: SessionSummary) => void;
   onExit: () => void;
 }) {
   const session = useSession(tabId, true, agent, onExit);
@@ -385,15 +437,31 @@ function TabPanel({
   }, [tabId, session.sendInput, sendInputs]);
   // A fresh tab with no agent and no server session yet needs one chosen.
   const needsAgent = agent == null && session.sessionId == null;
-  // With exactly one agent installed, skip the modal and pick it directly.
+  // Refresh the resumable list each time the picker is about to show, so
+  // sessions started while this client was idle become visible without a
+  // page reload. The list is also fetched on App mount for the initial case.
   useEffect(() => {
-    if (needsAgent && availableAgents != null && availableAgents.length === 1) {
+    if (needsAgent) onRefreshResumable();
+  }, [needsAgent, onRefreshResumable]);
+  // With exactly one agent installed AND nothing to resume, skip the
+  // modal and pick the lone agent directly. If sessions exist we still
+  // show the picker so the user can choose between resume and fresh.
+  useEffect(() => {
+    if (
+      needsAgent &&
+      availableAgents != null &&
+      availableAgents.length === 1 &&
+      (resumable?.length ?? 0) === 0
+    ) {
       onChooseAgent(availableAgents[0]!);
     }
-  }, [needsAgent, availableAgents, onChooseAgent]);
-  // Modal when the choice is real (2 agents) or there's nothing to run (0).
+  }, [needsAgent, availableAgents, resumable, onChooseAgent]);
+  // Modal when there's a real choice (multiple agents OR something to
+  // resume OR no agents at all — the empty modal then explains why).
   const showAgentModal =
-    needsAgent && availableAgents != null && availableAgents.length !== 1;
+    needsAgent &&
+    availableAgents != null &&
+    !(availableAgents.length === 1 && (resumable?.length ?? 0) === 0);
   // Surface WS state so debugging "blank screen" cases doesn't need
   // DevTools — a banner appears when we're disconnected.
   const showStatus = !needsAgent && !session.connected;
@@ -472,7 +540,12 @@ function TabPanel({
       </div>
       {showToolbar && <KeyboardToolbar session={session} />}
       {showAgentModal && (
-        <AgentModal agents={availableAgents ?? []} onPick={onChooseAgent} />
+        <AgentModal
+          agents={availableAgents ?? []}
+          resumable={resumable ?? []}
+          onPick={onChooseAgent}
+          onResume={onResume}
+        />
       )}
     </div>
   );
