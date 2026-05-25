@@ -49,10 +49,19 @@ const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
 // requests skip auth entirely so localhost stays frictionless even when
 // the server also listens on the LAN. A `--passcode <code>` (env
 // `PASSCODE`) pins the value across restarts; otherwise we generate a
-// fresh 8-char hex string each run.
+// fresh 4-char alphanumeric string each run — short enough to type on
+// a phone (62^4 ≈ 14 M combinations is plenty against casual LAN
+// scanning, especially with no rate-limit-defeating brute-force vector).
+const PASSCODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+function genPasscode(): string {
+  const bytes = randomBytes(4);
+  let out = '';
+  for (let i = 0; i < 4; i++) out += PASSCODE_ALPHABET[bytes[i]! % PASSCODE_ALPHABET.length];
+  return out;
+}
 const PASSCODE = process.env.PASSCODE && process.env.PASSCODE.length > 0
   ? process.env.PASSCODE
-  : (LAN ? randomBytes(4).toString('hex') : '');
+  : (LAN ? genPasscode() : '');
 const AUTH_ENABLED = LAN && PASSCODE.length > 0;
 
 // Treat loopback connections as trusted: even when the server is on
