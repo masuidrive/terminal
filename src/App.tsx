@@ -11,7 +11,7 @@ import { TerminalView } from './components/Terminal.tsx';
 import { ArtifactsPanel } from './components/ArtifactsPanel.tsx';
 import { KeyboardToolbar } from './components/KeyboardToolbar.tsx';
 import { AgentModal } from './components/AgentModal.tsx';
-import { useSession } from './hooks/useSession.ts';
+import { useSession, SESSION_KEY_PREFIX } from './hooks/useSession.ts';
 import { useMediaQuery } from './hooks/useMediaQuery.ts';
 import { useSoftKeyboard } from './hooks/useSoftKeyboard.ts';
 import type { AgentKind, TabState } from './types.ts';
@@ -136,8 +136,24 @@ export function App() {
 
   // Guard against losing the running session to an accidental back-swipe
   // or tab close — the browser shows its native "leave site?" prompt.
+  // Only arm the prompt while at least one tab has a stored server-side
+  // session: an empty just-opened app has nothing worth confirming, and
+  // surprising the user with a "leave?" dialog there is just noise.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      let hasLiveTab = false;
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(SESSION_KEY_PREFIX)) {
+            hasLiveTab = true;
+            break;
+          }
+        }
+      } catch {
+        /* ignore — fall through without prompt */
+      }
+      if (!hasLiveTab) return;
       e.preventDefault();
       e.returnValue = '';
     };
@@ -189,8 +205,8 @@ export function App() {
   function handleClose(id: string) {
     let storedSession: string | null = null;
     try {
-      storedSession = localStorage.getItem('ticket-web:tab:' + id);
-      localStorage.removeItem('ticket-web:tab:' + id);
+      storedSession = localStorage.getItem(SESSION_KEY_PREFIX + id);
+      localStorage.removeItem(SESSION_KEY_PREFIX + id);
     } catch {
       /* ignore */
     }

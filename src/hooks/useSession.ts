@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import type { AgentKind, ArtifactFile, ClientMessage, ServerMessage } from '../types.ts';
 import { BASE_PATH } from '../basePath.ts';
 
-const SESSION_KEY_PREFIX = 'ticket-web:tab:';
+export const SESSION_KEY_PREFIX = 'ticket-web:tab:';
 const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000] as const;
 // Force-close a socket that never reaches OPEN within this window — a
 // half-dead network can leave one stuck in CONNECTING indefinitely,

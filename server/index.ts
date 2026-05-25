@@ -162,20 +162,51 @@ app.get(PREFIX + '/api/info', (_req, res) => {
   });
 });
 
+// Cap a single upload so a (prefix-bearing) LAN visitor can't fill the
+// host's /tmp by streaming an unbounded payload. 100 MB matches the
+// drop-files-from-the-browser use case (large screenshots, video clips,
+// PDFs) while staying well under typical free-space margins.
+const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+
 // Drop a file into the terminal pane → POST the raw bytes here with the
 // filename in the query. The file lands in the shared artifacts dir,
 // auto-renamed on collision; the response gives the absolute path so the
 // client can paste it at the terminal cursor.
 app.post(PREFIX + '/api/artifacts/upload', async (req, res) => {
+  // Fast-reject when Content-Length already exceeds the cap so we don't
+  // touch disk for an upload we'd only have to delete. Some clients omit
+  // the header — the per-chunk counter below catches those.
+  const cl = Number(req.headers['content-length']);
+  if (Number.isFinite(cl) && cl > UPLOAD_MAX_BYTES) {
+    res.status(413).json({ error: 'file too large (max 100 MB)' });
+    return;
+  }
+  let dest = '';
+  let oversize = false;
+  let received = 0;
   try {
     const raw = String(req.query.name ?? 'file');
     const safe = sanitizeName(raw);
     const finalName = await uniqueName(ARTIFACTS_DIR, safe);
-    const dest = path.join(ARTIFACTS_DIR, finalName);
+    dest = path.join(ARTIFACTS_DIR, finalName);
+    req.on('data', (chunk: Buffer) => {
+      received += chunk.length;
+      if (received > UPLOAD_MAX_BYTES) {
+        oversize = true;
+        // Destroying the request rejects the pipeline below; cleanup is
+        // handled in the catch.
+        req.destroy();
+      }
+    });
     await pipeline(req, createWriteStream(dest));
     res.json({ name: finalName, path: dest });
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+    if (dest) await rm(dest, { force: true }).catch(() => undefined);
+    if (oversize) {
+      res.status(413).json({ error: 'file too large (max 100 MB)' });
+    } else {
+      res.status(500).json({ error: (err as Error).message });
+    }
   }
 });
 
@@ -404,10 +435,12 @@ artifactsWatcher.on('unlink', (p) =>
 async function createSession(agent: AgentKind): Promise<SessionState> {
   const id = randomUUID();
   const cont = continuePending;
-  continuePending = false;
   const cols = 120;
   const rows = 32;
   const { bin, args } = agentCommand(agent, ARTIFACTS_DIR, cont);
+  // Spawn first; only consume the one-shot --continue flag once we know
+  // the agent actually started. If spawn throws (binary missing, ENOENT)
+  // the flag remains armed for the user's retry.
   const ptyProc = pty.spawn(
     bin,
     args,
@@ -424,6 +457,7 @@ async function createSession(agent: AgentKind): Promise<SessionState> {
       } as Record<string, string>,
     }
   );
+  if (cont) continuePending = false;
 
   const state: SessionState = {
     id,
